@@ -4,15 +4,21 @@ from __future__ import annotations
 
 import re
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from nexus.api.deps import get_nexus
-from nexus.crypto import mask
 
 router = APIRouter(prefix="/api", tags=["connectors"])
 TARGET_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,40}$")
+
+
+def _mask_url(url: str) -> str:
+    """Show only the host: webhook URLs carry their secret token in the path."""
+    host = urlsplit(url).hostname or ""
+    return f"{host}/…" if host else "…"
 
 
 class ToolCallIn(BaseModel):
@@ -119,7 +125,7 @@ async def list_targets(nexus=Depends(get_nexus)) -> list[dict[str, Any]]:
                 {
                     "name": name,
                     "kind": name,
-                    "url_masked": mask(secret.get_secret_value(), 6),
+                    "url_masked": _mask_url(secret.get_secret_value()),
                     "description": "from .env",
                     "source": "env",
                 }
@@ -130,7 +136,7 @@ async def list_targets(nexus=Depends(get_nexus)) -> list[dict[str, Any]]:
             {
                 "name": row["name"],
                 "kind": row["kind"],
-                "url_masked": mask(url, 6),
+                "url_masked": _mask_url(url),
                 "description": row["description"],
                 "source": "ui",
             }
