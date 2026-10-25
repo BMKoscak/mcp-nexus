@@ -1,20 +1,22 @@
 """Human-in-the-loop gate for tools that send data off the machine.
 
 A tool marked ``requires_approval=True`` calls :meth:`ApprovalGate.request`
-before it runs. If auto-approve is off, the request is published on the
-``approvals`` topic (the UI shows an Approve / Deny card) and the tool call
-waits on a future until someone decides or the timeout expires (→ denied).
+before it runs. With auto-approve off, the request is written to the
+``pending_actions`` table and published on the ``approvals`` topic; the call
+then waits until someone decides or the timeout expires (→ denied).
 
-The gate sits inside the MCP server, so it applies equally to the web chat
-and to external MCP clients such as Claude Desktop.
+The decision travels through SQLite, not just process memory, so approvals
+also work across processes: when Claude Desktop runs ``nexus stdio``, that
+process waits on the row while the web UI (a different process) decides it.
+Same-process decisions additionally resolve an in-memory future instantly.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 import uuid
-from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from nexus.db import Database
@@ -22,27 +24,7 @@ from nexus.events import EventBus
 
 Decision = Literal["approved", "denied", "timeout", "auto"]
 SETTING_KEY = "auto_approve_outbound"
-
-
-@dataclass
-class PendingAction:
-    id: str
-    tool: str
-    connector: str
-    summary: str
-    arguments: dict[str, Any]
-    created_at: float = field(default_factory=time.time)
-    future: asyncio.Future[Decision] = field(default=None, repr=False)  # type: ignore[assignment]
-
-    def public(self) -> dict[str, Any]:
-        return {
-            "id": self.id,
-            "tool": self.tool,
-            "connector": self.connector,
-            "summary": self.summary,
-            "arguments": self.arguments,
-            "created_at": self.created_at,
-        }
+POLL_SECONDS = 0.5
 
 
 class ApprovalGate:
@@ -58,7 +40,7 @@ class ApprovalGate:
         self._bus = bus
         self._default_auto = default_auto_approve
         self.timeout_seconds = timeout_seconds
-        self._pending: dict[str, PendingAction] = {}
+        self._futures: dict[str, asyncio.Future[Decision]] = {}
 
     async def auto_approve(self) -> bool:
         return bool(await self._db.get_setting(SETTING_KEY, self._default_auto))
@@ -67,51 +49,98 @@ class ApprovalGate:
         await self._db.set_setting(SETTING_KEY, bool(value))
         self._bus.publish("approvals", {"type": "auto_approve", "value": bool(value)})
 
-    def pending(self) -> list[dict[str, Any]]:
-        return [p.public() for p in self._pending.values()]
+    async def pending(self) -> list[dict[str, Any]]:
+        """Pending actions from *any* process that are still inside their timeout window."""
+        cutoff = time.time() - self.timeout_seconds - 5
+        return [
+            _public(r)
+            for r in await self._db.list_pending_actions("pending")
+            if r["created_at"] >= cutoff
+        ]
+
+    async def history(self, limit: int = 50) -> list[dict[str, Any]]:
+        return [
+            _public(r) | {"status": r["status"], "decided_at": r["decided_at"]}
+            for r in await self._db.list_pending_actions(limit=limit)
+        ]
 
     async def request(
         self, *, tool: str, connector: str, summary: str, arguments: dict[str, Any]
     ) -> Decision:
-        action = PendingAction(
-            id=uuid.uuid4().hex[:12],
-            tool=tool,
-            connector=connector,
-            summary=summary,
-            arguments=arguments,
-        )
+        aid = uuid.uuid4().hex[:12]
         await self._db.add_pending_action(
-            action.id, tool=tool, connector=connector, summary=summary, arguments=arguments
+            aid, tool=tool, connector=connector, summary=summary, arguments=arguments
         )
+        event = {
+            "id": aid,
+            "tool": tool,
+            "connector": connector,
+            "summary": summary,
+            "arguments": arguments,
+            "created_at": time.time(),
+        }
 
         if await self.auto_approve():
-            await self._db.decide_pending_action(action.id, "auto")
-            self._bus.publish("approvals", {"type": "auto", **action.public()})
+            await self._db.resolve_pending_action(aid, "auto")
+            self._bus.publish("approvals", {"type": "auto", **event})
             return "auto"
 
-        action.future = asyncio.get_running_loop().create_future()
-        self._pending[action.id] = action
-        self._bus.publish("approvals", {"type": "requested", **action.public()})
+        future: asyncio.Future[Decision] = asyncio.get_running_loop().create_future()
+        self._futures[aid] = future
+        self._bus.publish("approvals", {"type": "requested", **event})
+        deadline = time.monotonic() + self.timeout_seconds
+        decision: Decision | None = None
         try:
-            decision = await asyncio.wait_for(action.future, timeout=self.timeout_seconds)
-        except TimeoutError:
-            decision = "timeout"
+            while decision is None:
+                try:
+                    decision = await asyncio.wait_for(asyncio.shield(future), POLL_SECONDS)
+                except TimeoutError:
+                    row = await self._db.get_pending_action(aid)
+                    if row and row["status"] != "pending":
+                        decision = row["status"]  # decided by another process
+                    elif time.monotonic() >= deadline:
+                        if await self._db.resolve_pending_action(aid, "timeout"):
+                            decision = "timeout"
+                        else:  # lost a race with a last-moment decision
+                            row = await self._db.get_pending_action(aid)
+                            decision = row["status"] if row else "timeout"
         finally:
-            self._pending.pop(action.id, None)
+            self._futures.pop(aid, None)
+            if not future.done():
+                future.cancel()
 
-        await self._db.decide_pending_action(action.id, decision)
-        self._bus.publish("approvals", {"type": "decided", "id": action.id, "decision": decision})
+        await self._db.resolve_pending_action(aid, decision)  # no-op unless still pending
+        self._bus.publish("approvals", {"type": "decided", "id": aid, "decision": decision})
         return decision
 
-    def decide(self, action_id: str, approve: bool) -> bool:
-        """Resolve a pending action. Returns ``False`` if it is unknown or already decided."""
-        action = self._pending.get(action_id)
-        if action is None or action.future.done():
-            return False
-        action.future.set_result("approved" if approve else "denied")
-        return True
+    async def decide(self, action_id: str, approve: bool) -> bool:
+        """Approve or deny a pending action (from this or another process).
+
+        Returns ``False`` if the action is unknown or was already decided.
+        """
+        status: Decision = "approved" if approve else "denied"
+        won = await self._db.resolve_pending_action(action_id, status)
+        future = self._futures.get(action_id)
+        if won and future is not None and not future.done():
+            future.set_result(status)  # request() publishes the "decided" event
+        elif won:
+            # The waiting call lives in another process; tell this process's UI anyway.
+            self._bus.publish("approvals", {"type": "decided", "id": action_id, "decision": status})
+        return won
 
     def cancel_all(self) -> None:
-        for action in list(self._pending.values()):
-            if not action.future.done():
-                action.future.set_result("denied")
+        for future in list(self._futures.values()):
+            if not future.done():
+                with contextlib.suppress(asyncio.InvalidStateError):
+                    future.set_result("denied")
+
+
+def _public(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "tool": row["tool"],
+        "connector": row["connector"],
+        "summary": row["summary"],
+        "arguments": row["arguments"],
+        "created_at": row["created_at"],
+    }

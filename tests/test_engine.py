@@ -136,7 +136,7 @@ async def test_gated_tool_waits_for_approval(engine, http):
         assert event["type"] == "requested" and "hello" in event["summary"]
         assert "discord.test" not in json.dumps(event)  # the URL never leaves the server
         assert http.requests == []  # nothing sent yet
-        engine.approvals.decide(event["id"], approve=True)
+        await engine.approvals.decide(event["id"], approve=True)
         result = await asyncio.wait_for(call, 5)
     assert not result.is_error, text_of(result)
     assert len(http.requests) == 1
@@ -152,7 +152,7 @@ async def test_denied_tool_reports_error_and_sends_nothing(engine, http):
             engine.call_tool("outbound_send_discord", {"content": "x", "target": "team"})
         )
         event = await asyncio.wait_for(approvals.get(), 2)
-        engine.approvals.decide(event["id"], approve=False)
+        await engine.approvals.decide(event["id"], approve=False)
         result = await asyncio.wait_for(call, 5)
     assert result.is_error and "denied" in text_of(result)
     assert http.requests == []

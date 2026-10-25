@@ -93,6 +93,11 @@ MIGRATIONS: list[str] = [
         result     TEXT
     );
     """,
+    # v2 — remember which client session produced each RPC message
+    """
+    ALTER TABLE rpc_log ADD COLUMN session TEXT;
+    CREATE INDEX idx_rpc_log_transport ON rpc_log(transport, id);
+    """,
 ]
 
 
@@ -339,12 +344,13 @@ class Database:
         if not entries:
             return
         await self.conn.executemany(
-            "INSERT INTO rpc_log(ts, transport, direction, kind, method, rpc_id, latency_ms, "
-            "payload) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO rpc_log(ts, transport, session, direction, kind, method, rpc_id, "
+            "latency_ms, payload) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     e["ts"],
                     e["transport"],
+                    e.get("session"),
                     e["direction"],
                     e["kind"],
                     e.get("method"),
@@ -386,6 +392,21 @@ class Database:
             "UPDATE pending_actions SET status=?, decided_at=?, result=? WHERE id=?",
             (status, _now(), result, aid),
         )
+
+    async def resolve_pending_action(self, aid: str, status: str) -> bool:
+        """Set the decision only if the action is still pending. Returns True if this call won."""
+        cur = await self.conn.execute(
+            "UPDATE pending_actions SET status=?, decided_at=? WHERE id=? AND status='pending'",
+            (status, _now(), aid),
+        )
+        await self.conn.commit()
+        return cur.rowcount == 1
+
+    async def get_pending_action(self, aid: str) -> dict[str, Any] | None:
+        row = await self._one("SELECT * FROM pending_actions WHERE id=?", (aid,))
+        if row:
+            row["arguments"] = json.loads(row["arguments"])
+        return row
 
     async def list_pending_actions(
         self, status: str | None = None, limit: int = 100

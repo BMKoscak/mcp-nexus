@@ -106,13 +106,13 @@ async def test_approval_gate_flow(db):
         )
         requested = await asyncio.wait_for(events.get(), 1)
         assert requested["type"] == "requested"
-        assert gate.decide(requested["id"], approve=True)
+        assert await gate.decide(requested["id"], approve=True)
         assert await task == "approved"
-        assert not gate.decide(requested["id"], approve=True)  # already decided
+        assert not await gate.decide(requested["id"], approve=True)  # already decided
 
     denied = asyncio.create_task(gate.request(tool="t", connector="c", summary="s", arguments={}))
     await asyncio.sleep(0.05)
-    gate.decide(gate.pending()[0]["id"], approve=False)
+    await gate.decide((await gate.pending())[0]["id"], approve=False)
     assert await denied == "denied"
 
     assert await gate.request(tool="t", connector="c", summary="s", arguments={}) == "timeout"
@@ -122,3 +122,26 @@ async def test_approval_gate_flow(db):
 
     statuses = sorted(r["status"] for r in await db.list_pending_actions())
     assert statuses == ["approved", "auto", "denied", "timeout"]
+
+
+async def test_approval_decided_from_another_process(tmp_path):
+    """The stdio server and the web UI are separate processes sharing one SQLite file."""
+    db_a, db_b = Database(tmp_path / "shared.db"), Database(tmp_path / "shared.db")
+    await db_a.connect()
+    await db_b.connect()
+    try:
+        waiting = ApprovalGate(db_a, EventBus(), timeout_seconds=5)  # e.g. `nexus stdio`
+        ui = ApprovalGate(db_b, EventBus(), timeout_seconds=5)  # e.g. `nexus serve`
+        call = asyncio.create_task(
+            waiting.request(tool="t", connector="c", summary="s", arguments={})
+        )
+        for _ in range(50):
+            pending = await ui.pending()
+            if pending:
+                break
+            await asyncio.sleep(0.02)
+        assert await ui.decide(pending[0]["id"], approve=True)
+        assert await asyncio.wait_for(call, 3) == "approved"
+    finally:
+        await db_a.close()
+        await db_b.close()
