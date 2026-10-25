@@ -26,7 +26,7 @@ flowchart LR
     subgraph Host["FastAPI Host (nexus.main)"]
         API["REST + HTMX routes"]
         SSE["SSE streams<br/>(chat tokens, rpc log, approvals)"]
-        Router["LLM Router<br/>(LiteLLM)"]
+        Router["LLM Router<br/>(httpx provider adapters)"]
         Agent["Agent loop<br/>(tool-call orchestration)"]
         Client["MCP Client<br/>(in-memory transport)"]
         Tap["RPC Tap → Event Bus"]
@@ -90,7 +90,8 @@ mcp-nexus/
 │   │   ├── web_fetch.py    HTTP fetch + HTML→text extraction           [Phase 2]
 │   │   ├── system.py       CPU/RAM/disk stats (psutil)                 [Phase 2+]
 │   │   └── sqlite_query.py Read-only SQL against a chosen DB file      [Phase 2+]
-│   ├── llm_router.py       Provider config, model list, streaming      [Phase 3]
+│   ├── llm_router.py       Provider registry, model list, test conn    [Phase 3]
+│   ├── providers/          anthropic.py · openai.py · ollama.py (httpx) [Phase 3]
 │   ├── agent.py            LLM ⇄ MCP tool-calling loop                 [Phase 3]
 │   ├── templates.py        Prompt template CRUD → MCP prompts          [Phase 3]
 │   ├── api/                FastAPI routers (chat, llm, connectors, …)  [Phase 3]
@@ -169,7 +170,12 @@ sequenceDiagram
 
 ### 4.4 LLM Router *(planned — Phase 3)*
 
-- **LiteLLM** provides one async, streaming, OpenAI-shaped interface over `anthropic/…`, `openai/…` and `ollama_chat/…` models, including tool calling. This avoids three hand-written tool-call adapters.
+- **Direct async clients over `httpx`** — one small adapter per provider behind a common `Provider` protocol:
+  - `AnthropicProvider` → `POST /v1/messages` (SSE stream, `tool_use` / `tool_result` blocks)
+  - `OpenAIProvider` → `POST /v1/chat/completions` (SSE stream, `tool_calls`); also works for any OpenAI-compatible endpoint (LM Studio, vLLM, OpenRouter) via a custom base URL
+  - `OllamaProvider` → `POST /api/chat` (NDJSON stream, native `tools`)
+- Each adapter normalises into one internal shape: `TextDelta`, `ToolCall(id, name, arguments)`, `Done(usage, stop_reason)`. The agent loop only sees that shape.
+- Models are addressed as `<provider>/<model>` (e.g. `anthropic/claude-sonnet-5-5`, `ollama/llama3.2`).
 - Provider credentials resolve in order: environment → encrypted SQLite (`providers` table) → none.
 - `GET /api/llm/models` merges a curated list for cloud providers with a live `GET {OLLAMA_BASE_URL}/api/tags` for local models.
 - "Test connection" sends a 1-token completion and reports latency or the provider's error.
@@ -225,7 +231,7 @@ Schema versioning uses `PRAGMA user_version` with ordered migration functions; W
 |---|---|---|---|
 | 1 | Host uses the MCP **client** over in-memory transport to reach its own tools | Call connector functions directly | Keeps one code path for internal and external clients and makes the Inspector show genuine JSON-RPC. Small overhead is irrelevant locally. |
 | 2 | **mcp 2.x `MCPServer`** | Pin `mcp<2` and use `FastMCP` | 2.x is current; `add_tool`/`remove_tool` cover dynamic registration. |
-| 3 | **LiteLLM** for routing | Separate `anthropic`, `openai`, `ollama` SDKs | One tool-calling format; Ollama via `ollama_chat/`. Trade-off: large dependency. Router is isolated behind `llm_router.py` so it can be swapped. |
+| 3 | **Direct `httpx` adapters** for Anthropic / OpenAI / Ollama | LiteLLM; official vendor SDKs | LiteLLM (1.106) declares `Requires-Python <3.15`, so it cannot install on Python 3.15, and it is a very large dependency. The three APIs are small and stable; ~100 lines per adapter gives full control over streaming and tool calls, and the protocol makes adding providers easy. Trade-off: we maintain the adapters. |
 | 4 | **SSE** over WebSockets | WebSockets | All real-time flows are server → browser; SSE works with HTMX's `sse` extension and plain `EventSource`, survives proxies, auto-reconnects. Browser → server stays plain POST. |
 | 5 | **SQLite + aiosqlite**, no ORM | SQLAlchemy | Handful of tables; raw SQL with Pydantic models keeps it small and transparent. |
 | 6 | Tailwind/HTMX/Alpine **via CDN** | Vite build | Zero-build requirement; versions pinned in URLs. Trade-off: needs internet on first page load for CDN assets (can be vendored later). |

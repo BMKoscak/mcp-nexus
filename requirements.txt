@@ -9,7 +9,6 @@ pydantic>=2.14
 pydantic-settings>=2.16
 aiosqlite>=0.22
 cryptography>=50
-litellm>=1.106
 httpx>=0.28
 selectolax>=1.0
 psutil>=7.2

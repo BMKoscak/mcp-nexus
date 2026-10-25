@@ -35,9 +35,7 @@ dependencies = [
     "pydantic-settings>=2.16",
     "aiosqlite>=0.22",
     "cryptography>=50",
-    # LLM routing (Anthropic, OpenAI, Ollama behind one interface)
-    "litellm>=1.106",
-    # Connectors
+    # HTTP: LLM provider clients (Anthropic, OpenAI, Ollama) + connectors
     "httpx>=0.28",
     "selectolax>=1.0",
     "psutil>=7.2",

@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     ollama_base_url: str = Field(
         default="http://localhost:11434", validation_alias=AliasChoices("OLLAMA_BASE_URL")
     )
-    default_model: str = "ollama_chat/llama3.2"
+    default_model: str = "ollama/llama3.2"
 
     # Outbound dispatcher
     auto_approve_outbound: bool = False

@@ -22,6 +22,11 @@ A running record of what was built, why, and how the pieces connect. Newest entr
 - **SSE instead of WebSockets** (ADR 4): every real-time stream is server → browser.
 - **Localhost-only by default**; plugins are documented as trusted code.
 
+- **Dropped LiteLLM in favour of direct `httpx` provider clients** (ADR 3, revised during Phase 1). Verifying the install on the dev machine (Windows, Python 3.15.0) failed: every LiteLLM release up to 1.106.4 declares `Requires-Python <3.15`. All other dependencies (`mcp` 2.3.0, FastAPI 0.162, Pydantic 2.14, cryptography, selectolax, psutil…) install cleanly on 3.15. The brief allowed "LiteLLM or direct async clients"; direct clients remove the version ceiling and a large dependency tree, at the cost of maintaining three small adapters (Anthropic Messages, OpenAI Chat Completions, Ollama `/api/chat`) behind one `Provider` protocol.
+
+### Verified
+- `pip install -e ".[dev]"` and `pytest` on Windows / Python 3.15.0: see commit log for this phase.
+
 ### How it fits together (so far)
 Only configuration is executable at this point. `Settings` is the single source for paths (`data_dir`, `workspace_dir`, `plugins_dir`) and limits that every later module reads via `get_settings()`.
 
