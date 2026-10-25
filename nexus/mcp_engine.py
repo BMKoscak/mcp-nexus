@@ -62,8 +62,13 @@ class RpcTap:
         self._flusher: asyncio.Task[None] | None = None
 
     def record(self, transport: str, session: str, direction: str, message: Any) -> dict[str, Any]:
-        """``direction`` is ``"c2s"`` (client → server) or ``"s2c"``."""
+        """Record a JSON-RPC message model. ``direction`` is ``"c2s"`` or ``"s2c"``."""
         payload = message.model_dump(by_alias=True, exclude_none=True, mode="json")
+        return self.record_payload(transport, session, direction, payload)
+
+    def record_payload(
+        self, transport: str, session: str, direction: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
         now = time.time()
         rpc_id = payload.get("id")
         method = payload.get("method")
@@ -191,6 +196,78 @@ class TappedTransport:
         return await self._cm.__aexit__(exc_type, exc, tb)
 
 
+# ── external-client tap (server middleware) ─────────────────
+class ExternalTap:
+    """MCP server middleware that logs requests from clients *other than* the host.
+
+    In-process traffic is already captured byte-for-byte by :class:`TappedTransport`.
+    Requests arriving over Streamable HTTP (``/mcp``) or stdio never pass through it,
+    so this middleware records them in the same entry format, rebuilding the JSON-RPC
+    envelope from the method, id, params and result the server handled.
+    """
+
+    def __init__(self, engine: MCPEngine) -> None:
+        self._engine = engine
+
+    async def __call__(self, ctx: Any, call_next: Any) -> Any:
+        is_http = ctx.request is not None
+        if not is_http and self._engine.mode != "stdio":
+            return await call_next(ctx)  # host traffic: already tapped on the wire
+        tap = self._engine.tap
+        transport = "http" if is_http else "stdio"
+        session = _client_name(ctx) or transport
+        request: dict[str, Any] = {"jsonrpc": "2.0", "method": ctx.method}
+        if ctx.request_id is not None:
+            request["id"] = ctx.request_id
+        if ctx.params is not None:
+            request["params"] = _jsonable(ctx.params)
+        tap.record_payload(transport, session, "c2s", request)
+        try:
+            result = await call_next(ctx)
+        except Exception as exc:
+            if ctx.request_id is not None:
+                error = {
+                    "code": getattr(getattr(exc, "error", None), "code", -32603),
+                    "message": str(exc),
+                }
+                tap.record_payload(
+                    transport,
+                    session,
+                    "s2c",
+                    {"jsonrpc": "2.0", "id": ctx.request_id, "error": error},
+                )
+            raise
+        if ctx.request_id is not None:
+            tap.record_payload(
+                transport,
+                session,
+                "s2c",
+                {"jsonrpc": "2.0", "id": ctx.request_id, "result": _jsonable(result)},
+            )
+        return result
+
+
+def _client_name(ctx: Any) -> str | None:
+    meta = ctx.meta
+    if meta is None:
+        return None
+    data = meta if isinstance(meta, dict) else getattr(meta, "model_dump", lambda **_: {})()
+    info = data.get("io.modelcontextprotocol/clientInfo") or {}
+    return info.get("name") if isinstance(info, dict) else None
+
+
+def _jsonable(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return value.model_dump(by_alias=True, exclude_none=True, mode="json")
+    if isinstance(value, dict):
+        return {k: _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
 # ── engine ───────────────────────────────────────────────────
 class MCPEngine:
     """Owns the server, registry, tap and the host's own MCP client session."""
@@ -217,8 +294,13 @@ class MCPEngine:
             default_auto_approve=settings.auto_approve_outbound,
             timeout_seconds=settings.approval_timeout_seconds,
         )
+        #: "serve" (web UI + /mcp) or "stdio" (launched by an MCP client such as Claude Desktop)
+        self.mode = "serve"
         self.server: MCPServer = MCPServer(
-            "MCP Nexus", instructions=SERVER_INSTRUCTIONS, version=__version__
+            "MCP Nexus",
+            instructions=SERVER_INSTRUCTIONS,
+            version=__version__,
+            middleware=[ExternalTap(self)],
         )
         self.tap = RpcTap(self.bus, self.db)
         self.registry = ConnectorRegistry(self)
@@ -231,7 +313,7 @@ class MCPEngine:
         self._owns_db = db is None
 
     # lifecycle ---------------------------------------------------------
-    async def start(self) -> None:
+    async def start(self, *, host_client: bool = True) -> None:
         if self._owns_db or self.db._conn is None:  # noqa: SLF001
             await self.db.connect()
         self._stack = AsyncExitStack()
@@ -253,6 +335,8 @@ class MCPEngine:
         )
         await self.tap.start()
         await self.registry.load_all()
+        if not host_client:
+            return
         # The client session owns anyio task groups, which must be entered and exited in the
         # same task. Run it in a dedicated supervisor task so start()/stop() may be called
         # from different tasks (FastAPI lifespan, pytest fixtures).
