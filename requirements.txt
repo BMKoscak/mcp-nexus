@@ -1,0 +1,16 @@
+# Runtime dependencies (mirrors [project.dependencies] in pyproject.toml).
+# Preferred install:  pip install -e ".[dev]"
+mcp>=2.3,<3
+fastapi>=0.162
+uvicorn[standard]>=0.54
+sse-starlette>=3.5
+jinja2>=3.1.6
+pydantic>=2.14
+pydantic-settings>=2.16
+aiosqlite>=0.22
+cryptography>=50
+litellm>=1.106
+httpx>=0.28
+selectolax>=1.0
+psutil>=7.2
+aiosmtplib>=5.1

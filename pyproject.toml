@@ -1,0 +1,70 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mcp-nexus"
+version = "0.1.0"
+description = "A local Model Context Protocol hub: multi-LLM chat, pluggable MCP connectors, outbound dispatch, prompt templates and a live JSON-RPC inspector."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+authors = [{ name = "Benjamin Koščak" }]
+keywords = ["mcp", "model-context-protocol", "llm", "fastapi", "agents", "claude", "ollama"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    # MCP core (2.x: FastMCP is now `mcp.server.mcpserver.MCPServer`)
+    "mcp>=2.3,<3",
+    # Web host
+    "fastapi>=0.162",
+    "uvicorn[standard]>=0.54",
+    "sse-starlette>=3.5",
+    "jinja2>=3.1.6",
+    # Data & config
+    "pydantic>=2.14",
+    "pydantic-settings>=2.16",
+    "aiosqlite>=0.22",
+    "cryptography>=50",
+    # LLM routing (Anthropic, OpenAI, Ollama behind one interface)
+    "litellm>=1.106",
+    # Connectors
+    "httpx>=0.28",
+    "selectolax>=1.0",
+    "psutil>=7.2",
+    "aiosmtplib>=5.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.1",
+    "pytest-asyncio>=1.4",
+    "ruff>=0.17",
+]
+
+[project.urls]
+Homepage = "https://github.com/BMKoscak/mcp-nexus"
+Issues = "https://github.com/BMKoscak/mcp-nexus/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["nexus"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
