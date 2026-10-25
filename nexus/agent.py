@@ -138,7 +138,7 @@ class Agent:
                 conversation_id,
                 "assistant",
                 text,
-                tool_calls=[c.to_dict() for c in calls] or None,
+                tool_calls=[c.to_record() for c in calls] or None,
             )
             history.append(Message("assistant", text, tool_calls=calls))
             if not calls:
@@ -196,7 +196,7 @@ class Agent:
         out: list[Message] = []
         for row in await self.db.list_messages(conversation_id):
             calls = [
-                ToolCall(c["id"], c["name"], c.get("arguments") or {})
+                ToolCall(c["id"], c["name"], c.get("arguments") or {}, c.get("extra") or {})
                 for c in (row["tool_calls"] or [])
             ]
             out.append(

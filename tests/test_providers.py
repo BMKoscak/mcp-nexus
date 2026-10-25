@@ -243,3 +243,185 @@ async def test_ollama_error_line_raises():
     ) as http:
         with pytest.raises(ProviderError, match="model not found"):
             await collect(OllamaProvider(http, api_key=None, base_url=None))
+
+
+# ── Gemini ───────────────────────────────────────────────────
+from nexus.providers import GeminiProvider  # noqa: E402
+from nexus.providers.gemini import clean_schema, to_function_declaration, to_gemini_contents  # noqa: E402
+
+
+async def test_gemini_stream_text_function_call_and_signature():
+    seen = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["url"] = str(req.url)
+        seen["headers"] = req.headers
+        seen["body"] = json.loads(req.content)
+        chunks = [
+            {
+                "candidates": [
+                    {
+                        "content": {
+                            "role": "model",
+                            "parts": [{"text": "Thinking about it", "thought": True}],
+                        }
+                    }
+                ]
+            },
+            {"candidates": [{"content": {"role": "model", "parts": [{"text": "Let me "}]}}]},
+            {"candidates": [{"content": {"role": "model", "parts": [{"text": "check."}]}}]},
+            {
+                "candidates": [
+                    {
+                        "content": {
+                            "role": "model",
+                            "parts": [
+                                {
+                                    "functionCall": {
+                                        "name": "web_fetch",
+                                        "args": {"url": "https://x.io"},
+                                    },
+                                    "thoughtSignature": "SIG_A",
+                                },
+                                {"functionCall": {"name": "system_stats", "args": {}}},
+                            ],
+                        },
+                        "finishReason": "STOP",
+                    }
+                ],
+                "usageMetadata": {
+                    "promptTokenCount": 11,
+                    "candidatesTokenCount": 6,
+                    "totalTokenCount": 17,
+                },
+            },
+        ]
+        return httpx.Response(200, content=sse_body(chunks))
+
+    async with client(handler) as http:
+        events = await collect(GeminiProvider(http, api_key="AIza-test", base_url=None), "gemini-x")
+
+    assert [e.text for e in events if isinstance(e, TextDelta)] == [
+        "Let me ",
+        "check.",
+    ]  # thought skipped
+    calls = [e.call for e in events if isinstance(e, ToolCallEvent)]
+    assert [c.name for c in calls] == ["web_fetch", "system_stats"]
+    assert calls[0].arguments == {"url": "https://x.io"}
+    assert calls[0].extra == {"thoughtSignature": "SIG_A"} and calls[1].extra == {}
+    assert events[-1] == Done("STOP", {"input_tokens": 11, "output_tokens": 6})
+
+    assert (
+        seen["url"]
+        == "https://generativelanguage.googleapis.com/v1beta/models/gemini-x:streamGenerateContent?alt=sse"
+    )
+    assert seen["headers"]["x-goog-api-key"] == "AIza-test"
+    body = seen["body"]
+    assert body["systemInstruction"] == {"parts": [{"text": "be brief"}]}
+    decl = body["tools"][0]["functionDeclarations"][0]
+    assert (
+        decl["name"] == "system_stats" and "parametersJsonSchema" not in decl
+    )  # no params → key omitted
+    assert [c["role"] for c in body["contents"]] == ["user", "model", "user"]
+    assert body["contents"][2]["parts"][0]["functionResponse"] == {
+        "name": "system_stats",
+        "response": {"result": '{"cpu": 12}'},
+    }
+
+
+def test_gemini_replays_signatures_and_keeps_parallel_order():
+    calls = [
+        ToolCall("fc1", "a", {"x": 1}, {"thoughtSignature": "SIG", "gemini_id": "fc1"}),
+        ToolCall("call_local", "b", {}),
+    ]
+    contents = to_gemini_contents(
+        [
+            Message("user", "go"),
+            Message("assistant", "", tool_calls=calls),
+            Message("tool", "r1", tool_call_id="fc1", name="a"),
+            Message("tool", "boom", tool_call_id="call_local", name="b", is_error=True),
+            Message("assistant", "done"),
+        ]
+    )
+    assert [c["role"] for c in contents] == ["user", "model", "user", "model"]
+    model_parts = contents[1]["parts"]
+    assert model_parts[0] == {
+        "functionCall": {"name": "a", "args": {"x": 1}, "id": "fc1"},
+        "thoughtSignature": "SIG",
+    }
+    assert model_parts[1] == {
+        "functionCall": {"name": "b", "args": {}}
+    }  # unsigned call sent unchanged, no invented id
+    # FC1, FC2, then FR1, FR2 — never interleaved
+    responses = [p["functionResponse"] for p in contents[2]["parts"]]
+    assert responses == [
+        {"name": "a", "response": {"result": "r1"}, "id": "fc1"},
+        {"name": "b", "response": {"error": "boom"}},
+    ]
+
+
+def test_gemini_schema_cleaning_inlines_refs():
+    schema = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+            "mode": {"$ref": "#/$defs/Mode", "description": "How"},
+            "n": {"type": ["integer", "null"]},
+        },
+        "required": ["mode"],
+        "$defs": {"Mode": {"enum": ["create", "append"], "type": "string"}},
+    }
+    cleaned = clean_schema(schema)
+    assert "$defs" not in cleaned and "$schema" not in cleaned
+    assert cleaned["properties"]["mode"] == {
+        "enum": ["create", "append"],
+        "type": "string",
+        "description": "How",
+    }
+    assert cleaned["properties"]["n"] == {"type": ["integer", "null"]}  # JSON Schema kept as-is
+    assert schema["$defs"]  # input not mutated
+    decl = to_function_declaration(ToolDef("t", "d", schema))
+    assert decl["parametersJsonSchema"]["required"] == ["mode"]
+
+
+async def test_gemini_list_models_filters_and_paginates():
+    pages = {
+        None: {
+            "models": [
+                {
+                    "name": "models/gemini-a",
+                    "displayName": "Gemini A",
+                    "supportedGenerationMethods": ["generateContent", "countTokens"],
+                },
+                {"name": "models/text-embedding-x", "supportedGenerationMethods": ["embedContent"]},
+            ],
+            "nextPageToken": "p2",
+        },
+        "p2": {
+            "models": [
+                {"name": "models/gemini-b", "supportedGenerationMethods": ["generateContent"]}
+            ]
+        },
+    }
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=pages[req.url.params.get("pageToken")])
+
+    async with client(handler) as http:
+        models = await GeminiProvider(http, api_key="k", base_url=None).list_models()
+    assert [(m.id, m.name) for m in models] == [("gemini-a", "Gemini A"), ("gemini-b", "gemini-b")]
+
+
+async def test_gemini_errors_surface_message():
+    body = {
+        "error": {
+            "code": 400,
+            "message": "Function call is missing a thought_signature",
+            "status": "INVALID_ARGUMENT",
+        }
+    }
+    async with client(lambda r: httpx.Response(400, json=body)) as http:
+        with pytest.raises(ProviderError, match="400.*thought_signature"):
+            await collect(GeminiProvider(http, api_key="k", base_url=None))
+        with pytest.raises(ProviderError, match="No API key"):
+            await collect(GeminiProvider(http, api_key=None, base_url=None))

@@ -388,3 +388,30 @@ async def test_destinations_show_only_the_host(api):
         json={"kind": "discord", "url": "https://discord.com/api/webhooks/1/TOKEN"},
     )
     assert (await api.get("/api/targets")).json()[0]["url_masked"] == "discord.com/…"
+
+
+async def test_provider_extra_survives_persistence(api):
+    """Gemini thought signatures must come back on the next call, even after a DB round trip."""
+    FakeProvider.script = [
+        [
+            ToolCallEvent(ToolCall("c1", "system_stats", {}, {"thoughtSignature": "SIG"})),
+            Done("tool_use"),
+        ],
+        [TextDelta("ok"), Done("end_turn")],
+        [TextDelta("again"), Done("end_turn")],
+    ]
+    events = parse_sse((await api.post("/api/chat", json={"message": "stats"})).text)
+    assert "thoughtSignature" not in json.dumps(events)  # never sent to the browser
+    assert FakeProvider.calls[1]["messages"][1].tool_calls[0].extra == {"thoughtSignature": "SIG"}
+    cid = events[0][1]["id"]
+    await api.post(
+        "/api/chat", json={"message": "more", "conversation_id": cid}
+    )  # history rebuilt from SQLite
+    assert FakeProvider.calls[2]["messages"][1].tool_calls[0].extra == {"thoughtSignature": "SIG"}
+
+
+async def test_gemini_listed_as_provider(api):
+    providers = {p["name"]: p for p in (await api.get("/api/llm/providers")).json()}
+    assert providers["gemini"]["label"] == "Google Gemini" and providers["gemini"]["needs_api_key"]
+    models = (await api.get("/api/llm/models")).json()
+    assert models["gemini"]["error"] == "no API key"

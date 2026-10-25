@@ -29,9 +29,16 @@ class ToolCall:
     id: str
     name: str
     arguments: dict[str, Any]
+    #: Provider-specific data that must survive the round trip but means nothing to the
+    #: UI, e.g. Gemini's ``thoughtSignature``. Persisted, never sent to the browser.
+    extra: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {"id": self.id, "name": self.name, "arguments": self.arguments}
+
+    def to_record(self) -> dict[str, Any]:
+        """What gets stored with the conversation (includes ``extra``)."""
+        return self.to_dict() | ({"extra": self.extra} if self.extra else {})
 
 
 @dataclass

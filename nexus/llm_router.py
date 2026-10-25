@@ -55,6 +55,7 @@ class LLMRouter:
         secret = {
             "anthropic": self.settings.anthropic_api_key,
             "openai": self.settings.openai_api_key,
+            "gemini": self.settings.gemini_api_key,
         }.get(name)
         return secret.get_secret_value() if secret else None
 
