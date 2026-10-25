@@ -347,3 +347,44 @@ async def test_mcp_http_endpoint_for_external_clients(settings, http):
     finally:
         server.should_exit = True
         await task
+
+
+# ── dashboard + HTMX partials ────────────────────────────────
+async def test_dashboard_page_wires_components(api):
+    html = (await api.get("/")).text
+    for marker in (
+        'x-data="nexus"',
+        'x-data="chat"',
+        'x-data="connections"',
+        'x-data="studio"',
+        'x-data="inspector"',
+        'hx-get="/ui/connectors"',
+        "/static/app.js",
+    ):
+        assert marker in html
+    assert (await api.get("/static/app.css")).status_code == 200
+
+
+async def test_connector_partials_toggle(api):
+    html = (await api.get("/ui/connectors")).text
+    assert 'id="connector-filesystem"' in html and 'data-status="active"' in html
+    off = (await api.post("/ui/connectors/system/toggle")).text
+    assert 'data-status="disabled"' in off and 'aria-checked="false"' in off
+    on = (await api.post("/ui/connectors/system/toggle")).text
+    assert 'data-status="active"' in on
+
+
+async def test_conversation_partial(api):
+    assert "Your chats will be listed here." in (await api.get("/ui/conversations")).text
+    events = parse_sse((await api.post("/api/chat", json={"message": "hello there"})).text)
+    cid = events[0][1]["id"]
+    html = (await api.get(f"/ui/conversations?active={cid}")).text
+    assert "hello there" in html and "is-active" in html
+
+
+async def test_destinations_show_only_the_host(api):
+    await api.put(
+        "/api/targets/d",
+        json={"kind": "discord", "url": "https://discord.com/api/webhooks/1/TOKEN"},
+    )
+    assert (await api.get("/api/targets")).json()[0]["url_masked"] == "discord.com/…"

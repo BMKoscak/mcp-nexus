@@ -1,0 +1,554 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MCP Nexus</title>
+  <meta name="description" content="Local MCP hub: chat with your models, connect local tools, approve outbound actions and watch the protocol live.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23142440'/%3E%3Cpath d='M7 11h10' stroke='%233cc3b2' stroke-width='3' stroke-linecap='round'/%3E%3Cpath d='M25 21H15' stroke='%23a88cf8' stroke-width='3' stroke-linecap='round'/%3E%3Ccircle cx='16' cy='16' r='3' fill='%23fff'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400..700&family=Spline+Sans+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.3"></script>
+  <style type="text/tailwindcss">
+    @theme {
+      --color-paper: var(--paper);
+      --color-panel: var(--panel);
+      --color-line: var(--line);
+      --color-muted: var(--muted);
+      --color-c2s: var(--c2s);
+      --color-s2c: var(--s2c);
+      --color-hold: var(--hold);
+      --color-fail: var(--fail);
+    }
+  </style>
+  <link rel="stylesheet" href="/static/app.css?v={{ version }}">
+  <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.11/dist/htmx.min.js"></script>
+  <script src="/static/app.js?v={{ version }}"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.17.4/dist/cdn.min.js"></script>
+</head>
+<body x-data="nexus">
+<div class="shell">
+
+  <!-- ── navigation rail ─────────────────────────────────── -->
+  <nav class="rail" aria-label="Sections">
+    <svg class="rail-mark" viewBox="0 0 32 32" aria-hidden="true">
+      <rect width="32" height="32" rx="7" fill="#1c2f52"/>
+      <path d="M7 11h10" stroke="#3cc3b2" stroke-width="3" stroke-linecap="round"/>
+      <path d="M25 21H15" stroke="#a88cf8" stroke-width="3" stroke-linecap="round"/>
+      <circle cx="16" cy="16" r="3" fill="#fff"/>
+    </svg>
+    <button class="rail-btn" @click="go('chat')" :aria-current="tab === 'chat' ? 'page' : null">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"/></svg>
+      Chat
+      <span class="rail-badge" x-show="approvals.pending.length" x-text="approvals.pending.length" x-cloak
+            :aria-label="approvals.pending.length + ' waiting for approval'"></span>
+    </button>
+    <button class="rail-btn" @click="go('connections')" :aria-current="tab === 'connections' ? 'page' : null">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 7V3M15 7V3M7 7h10v4a5 5 0 0 1-10 0zM12 16v5"/></svg>
+      Connect
+    </button>
+    <button class="rail-btn" @click="go('templates')" :aria-current="tab === 'templates' ? 'page' : null">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4h14v16H5zM9 9h6M9 13h3"/><path d="M14 13h1"/></svg>
+      Templates
+    </button>
+    <button class="rail-btn" @click="go('inspector')" :aria-current="tab === 'inspector' ? 'page' : null">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v18M4 8h7M13 16h7"/><path d="M8 5l3 3-3 3M16 13l-3 3 3 3"/></svg>
+      Inspector
+    </button>
+    <div class="rail-foot">
+      <button class="rail-btn" @click="cycleTheme()" :title="'Theme: ' + themeLabel">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor"/></svg>
+        <span x-text="themeLabel"></span>
+      </button>
+      <span class="text-[11px]" :title="connected ? 'Live updates connected' : 'Reconnecting to Nexus…'">
+        <span class="dot" :class="connected && 'ok'"></span><span x-text="connected ? 'Live' : 'Offline'"></span>
+      </span>
+    </div>
+  </nav>
+
+  <main class="main">
+
+    <!-- ── chat & execution ──────────────────────────────── -->
+    <section class="view" x-show="tab === 'chat'" x-data="chat" aria-label="Chat">
+      <div class="chat">
+        <aside class="convos" :class="showConvos && 'is-open'" aria-label="Chats">
+          <div class="convos-head">
+            <h2 class="section-title m-0">Chats</h2>
+            <span class="flex gap-2">
+              <button class="btn-quiet" @click="newChat(); showConvos = false">New chat</button>
+              <button class="btn-quiet only-narrow" @click="showConvos = false">Close</button>
+            </span>
+          </div>
+          <div id="convos-list" class="convos-list" hx-get="/ui/conversations" hx-trigger="load"></div>
+        </aside>
+
+        <div class="thread">
+          <div class="thread-scroll" x-ref="scroller">
+            <div class="thread-inner">
+
+              <template x-if="messages.length === 0">
+                <div class="empty-chat">
+                  <h2>What should we do on this computer?</h2>
+                  <p class="text-muted">Nexus can read and write files in your workspace, fetch web pages, check system stats and query SQLite files. Anything that sends data out, like a webhook or an email, waits for your approval first.</p>
+                  <template x-if="!modelKnown">
+                    <p class="msg-notice mt-4 text-left">
+                      <span x-text="model ? model + ' isn\'t available right now.' : 'No model is selected.'"></span>
+                      Add an API key or start Ollama in <button class="underline" @click="go('connections')">Connect</button>.
+                    </p>
+                  </template>
+                  <div class="starter-list">
+                    <template x-for="s in starters" :key="s">
+                      <button class="starter" @click="send(s)" x-text="s"></button>
+                    </template>
+                  </div>
+                </div>
+              </template>
+
+              <template x-for="(m, i) in messages" :key="i">
+                <div class="grid gap-3">
+                  <template x-if="m.role === 'user'">
+                    <div class="msg-user">
+                      <template x-if="m.template"><div class="text-xs text-muted mb-1" x-text="'From template ' + m.template"></div></template>
+                      <span class="msg-text" x-text="m.text"></span>
+                    </div>
+                  </template>
+
+                  <template x-if="m.role === 'assistant'">
+                    <div class="grid gap-3">
+                      <template x-for="n in m.notices"><p class="msg-notice" x-text="n"></p></template>
+
+                      <template x-for="(part, j) in m.parts" :key="j">
+                        <div>
+                          <template x-if="part.type === 'text'">
+                            <div class="msg-assistant" :class="isLastText(m, part) && 'cursor'" x-html="md(part.text)"></div>
+                          </template>
+
+                          <template x-if="part.type === 'tool'">
+                            <div class="grid gap-2">
+                              <details class="tool" :data-state="toolState(part)">
+                                <summary>
+                                  <span class="tool-dir" aria-hidden="true"></span>
+                                  <span>Used <span class="tool-name" x-text="part.name"></span></span>
+                                  <span class="tool-state" x-text="toolStateLabel(toolState(part))"></span>
+                                </summary>
+                                <div class="tool-body">
+                                  <h4 class="out">Sent to the tool</h4>
+                                  <pre x-text="prettyArgs(part.arguments) || '(no arguments)'"></pre>
+                                  <template x-if="part.result !== null">
+                                    <div class="grid gap-2">
+                                      <h4 class="back" x-text="part.is_error ? 'The tool reported an error' : 'Returned'"></h4>
+                                      <pre x-text="prettyArgs(part.result)"></pre>
+                                    </div>
+                                  </template>
+                                </div>
+                              </details>
+
+                              <template x-if="toolState(part) === 'waiting'">
+                                <div class="approval" role="alert" x-data="{ get p() { return pendingFor(part.name) } }">
+                                  <div class="approval-title">This needs your approval</div>
+                                  <div class="approval-summary" x-text="p?.summary"></div>
+                                  <div class="approval-actions">
+                                    <button class="btn-approve" @click="decide(p.id, true)">Approve and send</button>
+                                    <button class="btn-deny" @click="decide(p.id, false)">Deny</button>
+                                    <span class="text-xs text-muted" x-text="'Denied automatically after ' + approvals.timeout_seconds + ' s'"></span>
+                                  </div>
+                                </div>
+                              </template>
+                            </div>
+                          </template>
+                        </div>
+                      </template>
+
+                      <template x-if="!m.done && m.parts.length === 0"><div class="msg-assistant cursor text-muted">Thinking</div></template>
+                      <template x-if="m.error"><div class="msg-error" x-text="m.error"></div></template>
+                    </div>
+                  </template>
+                </div>
+              </template>
+
+              <!-- approvals raised outside this chat (e.g. by Claude Desktop through `nexus stdio`) -->
+              <template x-for="p in approvals.pending.filter(p => !messages.some(m => m.parts?.some(x => x.type === 'tool' && x.name === p.tool && x.state === 'running')))" :key="p.id">
+                <div class="approval" role="alert">
+                  <div class="approval-title">Another MCP client wants to send something</div>
+                  <div class="approval-summary" x-text="p.summary"></div>
+                  <div class="approval-actions">
+                    <button class="btn-approve" @click="decide(p.id, true)">Approve and send</button>
+                    <button class="btn-deny" @click="decide(p.id, false)">Deny</button>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <form class="composer" @submit.prevent="send()">
+            <div class="composer-inner">
+              <label class="sr-only" for="chat-input">Message</label>
+              <textarea id="chat-input" x-ref="input" class="textarea" rows="2" x-model="input" @keydown="onKey"
+                        placeholder="Ask Nexus to do something. Enter sends, Shift+Enter adds a line."></textarea>
+              <div class="composer-row">
+                <label class="sr-only" for="model">Model</label>
+                <select id="model" class="select w-auto max-w-[min(340px,60vw)]" x-model="model" @change="chooseModel()">
+                  <template x-if="!modelKnown && model"><option :value="model" x-text="model + ' (unavailable)'"></option></template>
+                  <template x-for="g in modelGroups" :key="g.provider">
+                    <optgroup :label="g.provider + (g.error ? ' — ' + g.error : '')">
+                      <template x-for="mm in g.models" :key="mm.id"><option :value="mm.id" x-text="mm.name"></option></template>
+                    </optgroup>
+                  </template>
+                </select>
+                <label class="flex items-center gap-2 text-sm text-muted">
+                  <input type="checkbox" x-model="useTools"> Use tools
+                </label>
+                <button type="button" class="btn-quiet only-narrow" @click="showConvos = true">Chats</button>
+                <span class="flex-1"></span>
+                <button type="button" class="btn-quiet" x-show="conversationId && !streaming" @click="remove()">Delete chat</button>
+                <button type="button" class="btn-quiet" x-show="streaming" @click="stop()" x-cloak>Stop</button>
+                <button type="submit" class="btn" :disabled="streaming || !input.trim()">Send</button>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── connections ───────────────────────────────────── -->
+    <section class="view" x-show="tab === 'connections'" x-cloak x-data="connections" aria-label="Connections">
+      <div class="view-pad stack">
+        <header>
+          <h1 class="view-title">Connections</h1>
+          <p class="view-lede">Choose which models Nexus can talk to, which local tools they can use, and where they're allowed to send things.</p>
+        </header>
+
+        <!-- models -->
+        <section>
+          <h2 class="section-title">Models</h2>
+          <p class="section-lede">Keys you enter here are stored encrypted on this computer. Keys in your <code>.env</code> file take priority.</p>
+          <div class="providers">
+            <template x-for="p in providers" :key="p.name">
+              <div class="provider">
+                <div class="provider-head">
+                  <div>
+                    <h3><span class="dot" :class="p.configured && 'ok'"></span><span x-text="p.label"></span></h3>
+                    <p class="text-sm text-muted m-0" x-show="p.needs_api_key">
+                      Key <span x-text="keySourceLabel(p)"></span><span x-show="p.api_key_masked" x-text="': ' + p.api_key_masked"></span>
+                    </p>
+                    <p class="text-sm text-muted m-0" x-show="!p.needs_api_key">Runs locally, no key needed</p>
+                  </div>
+                  <span class="text-sm text-muted" x-text="plural(models[p.name]?.models?.length ?? 0, 'model')"></span>
+                </div>
+                <label class="field" x-show="p.needs_api_key">API key
+                  <input class="input" type="password" autocomplete="off" x-model="drafts[p.name].api_key"
+                         :placeholder="p.api_key_source === 'none' ? 'Paste your key' : 'Paste a new key to replace it'">
+                </label>
+                <label class="field">Server address
+                  <input class="input" type="url" x-model="drafts[p.name].base_url" :placeholder="p.base_url">
+                </label>
+                <label class="field" x-show="models[p.name]?.models?.length">Model to test with
+                  <select class="select" x-model="testModel[p.name]">
+                    <option value="">Just check the connection</option>
+                    <template x-for="mm in models[p.name]?.models || []" :key="mm.id"><option :value="mm.id" x-text="mm.name"></option></template>
+                  </select>
+                </label>
+                <div class="flex gap-2 flex-wrap">
+                  <button class="btn" @click="saveProvider(p)">Save</button>
+                  <button class="btn-quiet" @click="test(p)">Test connection</button>
+                  <button class="btn-quiet" x-show="p.api_key_source === 'ui'" @click="clearKey(p)">Remove key</button>
+                </div>
+                <template x-if="tests[p.name]">
+                  <p class="text-sm m-0" :class="tests[p.name].ok ? 'text-[var(--ok)]' : 'text-fail'">
+                    <span x-show="tests[p.name].running" class="text-muted">Testing…</span>
+                    <span x-show="tests[p.name].ok" x-text="'Connected in ' + tests[p.name].latency_ms + ' ms, ' + tests[p.name].models + ' models' + (tests[p.name].reply ? '. Replied: “' + tests[p.name].reply + '”' : '')"></span>
+                    <span x-show="tests[p.name].ok === false" x-text="tests[p.name].error"></span>
+                  </p>
+                </template>
+              </div>
+            </template>
+          </div>
+        </section>
+
+        <!-- approval policy -->
+        <section>
+          <h2 class="section-title">Sending things out</h2>
+          <p class="section-lede">Webhooks, Discord and Slack messages, emails and push notifications leave your computer. By default each one waits for you to approve it.</p>
+          <div class="policy">
+            <button class="switch" role="switch" :aria-checked="approvals.auto_approve.toString()"
+                    @click="setAutoApprove(!approvals.auto_approve)" aria-labelledby="auto-label"><span></span></button>
+            <div>
+              <div id="auto-label" class="font-semibold">Send without asking</div>
+              <p class="text-sm text-muted m-0" x-text="approvals.auto_approve
+                ? 'On: outbound tools run immediately, for this dashboard and for external MCP clients.'
+                : 'Off: each outbound action shows Approve and Deny buttons and is denied after ' + approvals.timeout_seconds + ' seconds.'"></p>
+            </div>
+          </div>
+        </section>
+
+        <!-- webhook targets -->
+        <section>
+          <h2 class="section-title">Destinations</h2>
+          <p class="section-lede">Give a webhook a name and models can send to it by that name. The address itself is never shown to the model.</p>
+          <table class="table" x-show="targets.length">
+            <thead><tr><th>Name</th><th>Type</th><th>Address</th><th>Note</th><th><span class="sr-only">Actions</span></th></tr></thead>
+            <tbody>
+              <template x-for="t in targets" :key="t.name">
+                <tr>
+                  <td><code x-text="t.name"></code></td>
+                  <td x-text="{discord: 'Discord', slack: 'Slack', http: 'Webhook'}[t.kind]"></td>
+                  <td class="mono text-muted" x-text="t.url_masked"></td>
+                  <td class="text-muted" x-text="t.description"></td>
+                  <td class="text-right"><button class="btn-quiet" x-show="t.source === 'ui'" @click="removeTarget(t.name)">Remove</button></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+          <form class="grid gap-3 mt-4 sm:grid-cols-[1fr_auto_2fr_1.2fr_auto] items-end" @submit.prevent="addTarget()">
+            <label class="field">Name <input class="input" required pattern="[a-z0-9][a-z0-9_\-]{0,40}" x-model="newTarget.name" placeholder="team-chat"></label>
+            <label class="field">Type
+              <select class="select" x-model="newTarget.kind"><option value="discord">Discord</option><option value="slack">Slack</option><option value="http">Webhook</option></select>
+            </label>
+            <label class="field">Address <input class="input" type="url" required x-model="newTarget.url" placeholder="https://discord.com/api/webhooks/…"></label>
+            <label class="field">Note <input class="input" x-model="newTarget.description" placeholder="Optional"></label>
+            <button class="btn">Add destination</button>
+          </form>
+          <p class="text-sm text-fail mt-2" x-show="targetError" x-text="targetError"></p>
+        </section>
+
+        <!-- connectors (server-rendered with HTMX) -->
+        <section>
+          <div class="flex items-end justify-between gap-4 flex-wrap">
+            <div>
+              <h2 class="section-title">Local tools</h2>
+              <p class="section-lede">Each connector adds tools that models, Claude Desktop and other MCP clients can call. Drop a Python file into <code x-text="settings.plugins_dir || 'plugins/'"></code> to add your own.</p>
+            </div>
+            <button class="btn-quiet mb-3" hx-post="/ui/connectors/reload" hx-target="#connectors">Reload plugins</button>
+          </div>
+          <div id="connectors" class="connectors" hx-get="/ui/connectors" hx-trigger="load, refresh"></div>
+          <p class="text-sm text-muted mt-4">
+            Other apps can use these tools too. MCP address: <code x-text="settings.mcp_endpoint"></code>
+          </p>
+        </section>
+      </div>
+
+      <!-- connector settings modal -->
+      <template x-if="config">
+        <div class="modal-backdrop" @click.self="config = null" @keydown.escape.window="config = null">
+          <form class="modal" @submit.prevent="saveConfig()" role="dialog" aria-modal="true" :aria-label="config.name + ' settings'">
+            <h2 x-text="config.name + ' settings'"></h2>
+            <template x-for="f in config.fields" :key="f.key">
+              <div>
+                <template x-if="f.kind === 'boolean'">
+                  <label class="flex gap-3 items-start">
+                    <input type="checkbox" class="mt-1" x-model="config.values[f.key]">
+                    <span><span class="font-semibold" x-text="f.label"></span><br><span class="text-sm text-muted" x-text="f.help"></span></span>
+                  </label>
+                </template>
+                <template x-if="f.kind !== 'boolean'">
+                  <label class="field">
+                    <span class="font-semibold text-[var(--text)]" x-text="f.label"></span>
+                    <template x-if="f.kind === 'list'"><textarea class="textarea" rows="3" x-model="config.values[f.key]" placeholder="One per line"></textarea></template>
+                    <template x-if="f.kind === 'integer' || f.kind === 'number'"><input class="input" type="number" x-model="config.values[f.key]"></template>
+                    <template x-if="f.kind === 'secret'"><input class="input" type="password" autocomplete="off" x-model="config.values[f.key]" placeholder="Leave as is to keep the saved value"></template>
+                    <template x-if="f.kind === 'string'"><input class="input" x-model="config.values[f.key]"></template>
+                    <span x-text="f.help"></span>
+                  </label>
+                </template>
+              </div>
+            </template>
+            <p class="text-sm text-fail" x-show="config.error" x-text="config.error"></p>
+            <div class="flex gap-2 justify-end">
+              <button type="button" class="btn-quiet" @click="config = null">Cancel</button>
+              <button class="btn" :disabled="config.saving">Save settings</button>
+            </div>
+          </form>
+        </div>
+      </template>
+    </section>
+
+    <!-- ── template studio ───────────────────────────────── -->
+    <section class="view" x-show="tab === 'templates'" x-cloak x-data="studio" aria-label="Templates">
+      <div class="view-pad">
+        <header>
+          <h1 class="view-title">Templates</h1>
+          <p class="view-lede">Reusable prompts with blanks to fill in. Write <code>{{ "{{ topic }}" }}</code> for a blank, or <code>{{ "{{ tone | default('friendly') }}" }}</code> for one with a fallback. Saved templates are also offered to Claude Desktop and other MCP clients as prompts.</p>
+        </header>
+        <div class="studio">
+          <aside>
+            <div class="flex justify-between items-center mb-2">
+              <h2 class="section-title m-0">Saved</h2>
+              <button class="btn-quiet" @click="create()">New template</button>
+            </div>
+            <div class="tpl-list">
+              <template x-for="t in templates" :key="t.name">
+                <button class="tpl-item" :class="selected === t.name && 'is-active'" @click="select(t.name)">
+                  <span x-text="t.name"></span><small x-text="t.description || 'No description'"></small>
+                </button>
+              </template>
+            </div>
+          </aside>
+
+          <div>
+            <template x-if="!form">
+              <p class="text-muted">Choose a template, or create a new one.</p>
+            </template>
+            <template x-if="form">
+              <form class="editor" @submit.prevent="save()">
+                <div class="grid gap-3 sm:grid-cols-[1fr_2fr]">
+                  <label class="field">Name
+                    <input class="input" x-ref="tplName" required x-model="form.name" :readonly="!form.isNew" pattern="[a-z0-9][a-z0-9_\-]{0,63}" placeholder="weekly-digest">
+                  </label>
+                  <label class="field">What it does
+                    <input class="input" x-model="form.description" placeholder="Shown to MCP clients next to the name">
+                  </label>
+                </div>
+                <label class="field">Prompt
+                  <textarea class="textarea body" x-model="form.body" @input="onBodyInput()" required spellcheck="false"></textarea>
+                </label>
+                <p class="text-sm text-fail m-0" x-show="syntaxError" x-text="syntaxError"></p>
+
+                <div x-show="form.arguments.length">
+                  <div class="text-sm font-semibold mb-2">Blanks</div>
+                  <div class="args-grid">
+                    <span class="text-muted">Blank</span><span class="text-muted">Hint for whoever fills it in</span><span class="text-muted">Fallback</span><span class="text-muted">Required</span>
+                    <template x-for="a in form.arguments" :key="a.name">
+                      <div class="contents">
+                        <span class="var-chip justify-self-start" x-text="a.name"></span>
+                        <input class="input" x-model="a.description" :aria-label="'Hint for ' + a.name">
+                        <input class="input w-28" x-model="a.default" :aria-label="'Fallback for ' + a.name">
+                        <input type="checkbox" x-model="a.required" :aria-label="a.name + ' is required'" class="justify-self-center">
+                      </div>
+                    </template>
+                  </div>
+                </div>
+
+                <div class="flex gap-2 flex-wrap items-center">
+                  <button class="btn" :disabled="saving || !!syntaxError">Save template</button>
+                  <button type="button" class="btn-quiet" x-show="!form.isNew" @click="remove()">Delete</button>
+                  <span class="text-sm text-muted" x-text="status"></span>
+                </div>
+
+                <template x-if="!form.isNew">
+                  <div class="grid gap-3 border-t border-line pt-4">
+                    <h3 class="section-title m-0">Try it</h3>
+                    <div class="grid gap-3 sm:grid-cols-2">
+                      <template x-for="a in form.arguments" :key="a.name">
+                        <label class="field"><span x-text="a.name + (a.required && !a.default ? '' : ' (optional)')"></span>
+                          <input class="input" x-model="values[a.name]" :placeholder="a.default || a.description">
+                        </label>
+                      </template>
+                    </div>
+                    <div class="flex gap-2">
+                      <button type="button" class="btn-quiet" @click="renderPreview()">Preview</button>
+                      <button type="button" class="btn" @click="run()">Run in chat</button>
+                    </div>
+                    <p class="text-sm text-fail m-0" x-show="previewError" x-text="previewError"></p>
+                    <div class="preview" x-show="preview" x-text="preview"></div>
+                  </div>
+                </template>
+              </form>
+            </template>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── live inspector ────────────────────────────────── -->
+    <section class="view" x-show="tab === 'inspector'" x-cloak x-data="inspector" aria-label="Inspector">
+      <div class="inspector">
+        <div class="insp-bar">
+          <h1>Inspector</h1>
+          <label class="sr-only" for="insp-filter">Filter messages</label>
+          <input id="insp-filter" class="input w-56" x-model="filter" placeholder="Filter by method or content">
+          <label class="sr-only" for="insp-transport">Source</label>
+          <select id="insp-transport" class="select w-auto" x-model="transport">
+            <option value="all">All sources</option>
+            <option value="inproc">This dashboard</option>
+            <option value="http">HTTP clients</option>
+            <option value="stdio">stdio clients</option>
+          </select>
+          <button class="btn-quiet" @click="togglePause()" x-text="paused ? (buffered ? 'Resume (' + buffered + ' new)' : 'Resume') : 'Pause'"></button>
+          <button class="btn-quiet" @click="exportJSON()">Export JSON</button>
+          <button class="btn-quiet" @click="clear()">Clear</button>
+          <div class="insp-legend" aria-hidden="true">
+            <span><i style="background: var(--c2s)"></i>Client to server</span>
+            <span><i style="background: var(--s2c)"></i>Server to client</span>
+          </div>
+        </div>
+
+        <div class="insp-body">
+          <div class="wire" x-ref="wire" @scroll="onScroll()">
+            <div class="wire-head"><div>Client</div><div></div><div>MCP server</div></div>
+            <template x-if="visible.length === 0">
+              <div class="wire-empty">
+                <p>No messages yet. Send a chat message or call a tool and every JSON-RPC request and reply appears here as it happens.</p>
+              </div>
+            </template>
+            <div class="wire-rows">
+              <template x-for="(e, i) in visible" :key="e.transport + e.seq + '-' + e.ts">
+                <div>
+                  <template x-if="showSession(e, i)">
+                    <div class="wire-session"><span x-text="transportLabel(e.transport) + (e.session && e.session !== 'host' && e.session !== e.transport ? ' · ' + e.session : '')"></span></div>
+                  </template>
+                  <div class="wire-row" :data-dir="e.direction" :data-kind="e.kind">
+                    <div class="min-w-0 grid">
+                      <template x-if="e.direction === 'c2s'">
+                        <button class="pkt" :class="{ 'is-selected': selected === e, 'is-pair': isPair(e) }" @click="selected = e">
+                          <span class="pkt-method" x-text="label(e)"></span>
+                          <span class="pkt-tool" x-text="toolName(e)"></span>
+                          <span class="pkt-meta" x-text="time(e.ts)"></span>
+                        </button>
+                      </template>
+                    </div>
+                    <div class="spine" aria-hidden="true"></div>
+                    <div class="min-w-0 grid">
+                      <template x-if="e.direction === 's2c'">
+                        <button class="pkt" :class="{ 'is-selected': selected === e, 'is-pair': isPair(e) }" @click="selected = e">
+                          <span class="pkt-method" x-text="label(e)"></span>
+                          <span class="pkt-lat" x-show="e.latency_ms != null" x-text="e.latency_ms + ' ms'"></span>
+                          <span class="pkt-meta" x-text="time(e.ts)"></span>
+                        </button>
+                      </template>
+                    </div>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <aside class="detail" aria-label="Message details">
+            <template x-if="!selected">
+              <div class="text-muted text-sm">
+                <h2 class="text-[var(--text)]">Select a message</h2>
+                <p>Requests travel left to right in teal, replies come back in violet. Select either one to see its exact JSON and the message it pairs with.</p>
+              </div>
+            </template>
+            <template x-if="selected">
+              <div>
+                <h2 x-text="label(selected)"></h2>
+                <p class="text-sm text-muted m-0" x-text="kindLabel(selected) + ', ' + dirLabel(selected).toLowerCase()"></p>
+                <dl>
+                  <dt>Source</dt><dd x-text="transportLabel(selected.transport) + (selected.session ? ' (' + selected.session + ')' : '')"></dd>
+                  <dt>Time</dt><dd x-text="new Date(selected.ts * 1000).toLocaleString()"></dd>
+                  <template x-if="selected.rpc_id != null"><dt>Request id</dt></template>
+                  <template x-if="selected.rpc_id != null"><dd class="mono" x-text="selected.rpc_id"></dd></template>
+                  <template x-if="selected.latency_ms != null"><dt>Round trip</dt></template>
+                  <template x-if="selected.latency_ms != null"><dd x-text="selected.latency_ms + ' ms'"></dd></template>
+                </dl>
+                <template x-if="partner(selected)">
+                  <button class="btn-quiet mb-3" @click="selected = partner(selected)" x-text="selected.direction === 'c2s' ? 'Show the reply' : 'Show the request'"></button>
+                </template>
+                <pre class="json" x-html="json(selected.payload)"></pre>
+              </div>
+            </template>
+          </aside>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="toasts" aria-live="polite">
+  <template x-for="t in toasts" :key="t.id">
+    <div class="toast" :class="{ 'is-error': t.kind === 'error', 'is-hold': t.kind === 'hold' }" x-text="t.text"></div>
+  </template>
+</div>
+</body>
+</html>
