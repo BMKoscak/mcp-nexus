@@ -1,6 +1,6 @@
 # MCP Nexus
 
-**A local Model Context Protocol hub with a web dashboard.** Chat with Claude, OpenAI or a local Ollama model, give it tools written as plain Python classes, approve anything it wants to send off your machine, keep reusable prompt templates, and watch every JSON-RPC message between client and server as it happens.
+**A local Model Context Protocol hub with a web dashboard.** Chat with Claude, Gemini, OpenAI or a local Ollama model, give it tools written as plain Python classes, approve anything it wants to send off your machine, keep reusable prompt templates, and watch every JSON-RPC message between client and server as it happens.
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![MCP 2026-07-28](https://img.shields.io/badge/MCP-2026--07--28-6a3fd1)](https://modelcontextprotocol.io/)
@@ -20,7 +20,7 @@ MCP clients usually hide the protocol. MCP Nexus puts it on the table: the same 
 
 | | |
 |---|---|
-| **LLM Hub** | Anthropic, OpenAI (and any OpenAI-compatible server such as LM Studio, vLLM or OpenRouter) and Ollama behind one interface, with streaming and tool calling. Keys entered in the UI are encrypted at rest; keys in `.env` take priority. Live model lists and a one-click connection test. |
+| **LLM Hub** | Anthropic Claude, Google Gemini, OpenAI (and any OpenAI-compatible server such as LM Studio, vLLM or OpenRouter) and Ollama behind one interface, with streaming and tool calling. Keys entered in the UI are encrypted at rest; keys in `.env` take priority. Live model lists and a one-click connection test. |
 | **Local tools ("Connect stuff")** | Built-in connectors: **filesystem** (sandboxed workspace), **web** (fetch pages as markdown, extract links, read JSON; private-network requests blocked), **system** (CPU, memory, disk, processes), **sqlite** (read-only queries). Toggle each one on or off live; settings forms are generated from each connector's config model. |
 | **Outbound dispatcher ("Send stuff")** | Webhooks, Discord, Slack, email (SMTP) and push notifications (ntfy). Every send waits for **Approve / Deny** in the dashboard, including requests from Claude Desktop, unless you switch on *Send without asking*. Named destinations keep webhook URLs away from the model. |
 | **Template Studio** | Prompt templates with blanks (`{{ topic }}`, `{{ tone \| default('friendly') }}`), rendered in a Jinja2 sandbox and published as **MCP prompts**, so other clients can use them too. Preview, then run in chat. |
@@ -35,7 +35,7 @@ MCP clients usually hide the protocol. MCP Nexus puts it on the table: the same 
 </tr>
 <tr>
 <td><img src="docs/screenshots/templates.png" alt="Template Studio"></td>
-<td><img src="docs/screenshots/connections.png" alt="Connections: models, approvals, destinations, local tools"></td>
+<td><img src="docs/screenshots/connections.png" alt="Connections: Anthropic, OpenAI, Gemini and Ollama, approval policy, destinations"></td>
 </tr>
 </table>
 
@@ -61,7 +61,7 @@ flowchart TB
         Gate["Approval gate"]
     end
 
-    LLMs["Anthropic · OpenAI · Ollama"]
+    LLMs["Anthropic · Gemini · OpenAI · Ollama"]
     Ext["Claude Desktop · Cursor · any MCP client"]
 
     Browser -- "HTTP + SSE" --> API
@@ -75,7 +75,7 @@ flowchart TB
     Host --- DB
 ```
 
-The dashboard's agent never calls connector code directly: it is an MCP client of its own server over an in-memory transport that relays real JSON-RPC, so what you see in the Inspector is exactly what went over the wire. External clients are recorded by server middleware in the same format. The approval gate sits inside the server and coordinates through SQLite, so it also protects calls from a separate `nexus stdio` process. The full design, with 16 recorded decisions, is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); the build history is in [`docs/DEVLOG.md`](docs/DEVLOG.md).
+The dashboard's agent never calls connector code directly: it is an MCP client of its own server over an in-memory transport that relays real JSON-RPC, so what you see in the Inspector is exactly what went over the wire. External clients are recorded by server middleware in the same format. The approval gate sits inside the server and coordinates through SQLite, so it also protects calls from a separate `nexus stdio` process. The full design, with 17 recorded decisions, is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); the build history is in [`docs/DEVLOG.md`](docs/DEVLOG.md).
 
 ## Quickstart
 
@@ -106,7 +106,7 @@ pip install -e .
 cp .env.example .env        # Windows: copy .env.example .env
 ```
 
-Every setting is optional. You can paste API keys straight into the dashboard instead (they're stored encrypted in `data/`). For a fully local setup, install [Ollama](https://ollama.com), then run `ollama pull llama3.2` (or any model that supports tools).
+Every setting is optional. You can paste API keys straight into the dashboard instead (they're stored encrypted in `data/`). Gemini keys are created in [Google AI Studio](https://aistudio.google.com/apikey). For a fully local setup, install [Ollama](https://ollama.com), then run `ollama pull llama3.2` (or any model that supports tools).
 
 **3. Run**
 
@@ -222,7 +222,7 @@ All settings come from environment variables or `.env` (see [`.env.example`](.en
 | `NEXUS_WORKSPACE_DIR` | `./workspace` | The only folder the filesystem and sqlite connectors can touch |
 | `NEXUS_PLUGINS_DIR` | `./plugins` | Custom connectors |
 | `NEXUS_DATA_DIR` | `./data` | SQLite database and the encryption key |
-| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | | Provider keys (override keys saved in the UI) |
+| `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY` | | Provider keys (override keys saved in the UI). `GOOGLE_API_KEY` also works for Gemini. |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Local models |
 | `NEXUS_DEFAULT_MODEL` | `ollama/llama3.2` | First model selected, as `provider/model` |
 | `NEXUS_AUTO_APPROVE_OUTBOUND` | `false` | Initial value of *Send without asking* |
@@ -260,7 +260,7 @@ Interactive docs are served at **`/docs`** while Nexus runs. The main routes:
 
 ```bash
 pip install -e ".[dev]"
-pytest                       # 78 tests: connectors, engine, providers, API end to end
+pytest                       # 85 tests: connectors, engine, providers, API end to end
 ruff check . && ruff format --check .
 python scripts/smoke_test.py # 54 live checks against a running `nexus serve`
 ```
@@ -272,7 +272,7 @@ nexus/
 ├── mcp_engine.py      MCPServer, tapped transport, RPC tap, external-client middleware
 ├── registry.py        connector discovery, lifecycle, config, approval wrapping
 ├── connectors/        base API + filesystem, outbound, web_fetch, system, sqlite_query
-├── providers/         anthropic, openai, ollama (direct httpx streaming clients)
+├── providers/         anthropic, gemini, openai, ollama (direct httpx streaming clients)
 ├── llm_router.py      credentials, model discovery, routing
 ├── agent.py           LLM ⇄ MCP tool-calling loop
 ├── templates.py       sandboxed templates → MCP prompts

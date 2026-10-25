@@ -75,9 +75,8 @@ async def main() -> int:
 
         # LLM hub
         providers = (await expect(c, "GET", "/api/llm/providers")).json()
-        check(
-            "providers listed", {p["name"] for p in providers} >= {"anthropic", "openai", "ollama"}
-        )
+        expected_providers = {"anthropic", "gemini", "openai", "ollama"}
+        check("providers listed", {p["name"] for p in providers} >= expected_providers)
         models = (await expect(c, "GET", "/api/llm/models")).json()
         available = [m["id"] for info in models.values() for m in info["models"]]
         check(
