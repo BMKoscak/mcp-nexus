@@ -49,6 +49,9 @@ dev = [
     "ruff>=0.17",
 ]
 
+[project.scripts]
+nexus = "nexus.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/BMKoscak/mcp-nexus"
 Issues = "https://github.com/BMKoscak/mcp-nexus/issues"
@@ -66,3 +69,12 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's documented dependency-injection pattern
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query"]
+
+[tool.ruff.lint.per-file-ignores]
+# canned vendor payloads read better on one line
+"tests/test_providers.py" = ["E501"]
+"tests/test_api.py" = ["E501"]
