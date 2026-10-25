@@ -1,6 +1,6 @@
 # MCP Nexus — Architecture
 
-> Status: **Phase 4 implemented** (engine, persistence, connectors, FastAPI backend, LLM router, agent, templates, dashboard). Sections marked *(planned)* describe modules that later phases implement; this document is updated as they land.
+> Status: **v0.1.0 — all five phases complete.** Every component described here is implemented, tested and verified on Linux (Python 3.12, 3.13) and Windows (Python 3.15).
 
 ## 1. Goals
 
@@ -136,6 +136,7 @@ A connector is a class; methods decorated with `@tool` become MCP tools and `@re
 ```python
 from nexus.connectors import Connector, tool
 
+
 class Dice(Connector):
     name = "dice"
     description = "Roll dice"
@@ -144,6 +145,7 @@ class Dice(Connector):
     async def roll(self, sides: int = 6) -> int:
         """Roll one die."""
         import random
+
         return random.randint(1, sides)
 ```
 

@@ -183,3 +183,29 @@ index.html ── x-data="nexus" ──► EventSource /api/events (rpc · appro
 
 ### Next (Phase 5)
 README (badges, value proposition, Mermaid diagram, quickstart, Claude Desktop setup, 20-line connector guide, screenshots), final endpoint verification on Windows, create `BMKoscak/mcp-nexus` on GitHub and push.
+
+---
+
+## Phase 5 — Documentation, verification & release · 2026-10-25
+
+### Built
+- **`README.md`**: value proposition, badges (Python 3.12+, MCP 2026-07-28, mcp SDK 2.x, FastAPI, MIT), feature table, screenshots, Mermaid architecture diagram, quickstart for Windows/macOS/Linux, Claude Desktop and HTTP-client setup, the connector guide (a complete plugin in 13 lines plus an "everything" example with config, secrets, errors, approvals and resources), configuration table, API overview, security model, development notes and roadmap.
+- **`scripts/smoke_test.py`**: 54 live checks against a running server (every REST route, HTMX fragments, static assets, OpenAPI docs, connector toggling, path-escape refusal, URL masking, template render through MCP `prompts/get`, conversation CRUD, the SSE event stream, Streamable HTTP MCP, and a real chat turn when a model is configured). Cleans up after itself; non-zero exit on failure.
+- **`.github/workflows/ci.yml`** (written, not yet in the repo; see below): lint + tests on Ubuntu and Windows × Python 3.12/3.13.
+
+### Verified
+| Where | Result |
+|---|---|
+| Linux, Python 3.12.15 | 78 passed |
+| Linux, Python 3.13 | 78 passed; ruff check + format clean; smoke test 54/54 |
+| Windows, Python 3.15.0 | 77 passed, 1 skipped (symlink test needs admin); ruff clean; smoke test 54/54 against `nexus serve` |
+| README examples | Both connector examples copied verbatim into a plugins folder; `nexus tools` lists `dice_roll`, `weather_now`, `weather_send_sms ⚠ approval` |
+| Dashboard assets | All four CDN URLs (Tailwind, HTMX, Alpine, Google Fonts) return 200 from the Windows machine |
+
+### Decisions & findings
+- **ruff now formats Python code blocks inside Markdown.** `ruff format --check .` flagged the README and ARCHITECTURE examples; they're formatted, and the README example was reworded so a trailing comment didn't force an awkward wrap.
+- **The CI workflow isn't committed yet.** The tool that writes into the project folder treats `.github/workflows/` as protected (workflow files execute code on GitHub), so it was delivered to Ben to add by hand, and the README's CI badge was left out until it exists.
+- **Not verified against a live LLM.** There's still no API key or Ollama install on the dev machine. The provider adapters are covered by canned-stream tests built from each vendor's documented formats, and the smoke test automatically runs a real chat turn once a model is configured.
+
+### Release
+- Repository: **https://github.com/BMKoscak/mcp-nexus** (public, MIT), `main` branch, full commit history from Phase 1.
