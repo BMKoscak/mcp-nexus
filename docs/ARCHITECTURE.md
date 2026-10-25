@@ -1,6 +1,6 @@
 # MCP Nexus — Architecture
 
-> Status: **Phase 3 implemented** (engine, persistence, connectors, FastAPI backend, LLM router, agent, templates). Sections marked *(planned)* describe modules that later phases implement; this document is updated as they land.
+> Status: **Phase 4 implemented** (engine, persistence, connectors, FastAPI backend, LLM router, agent, templates, dashboard). Sections marked *(planned)* describe modules that later phases implement; this document is updated as they land.
 
 ## 1. Goals
 
@@ -100,7 +100,8 @@ mcp-nexus/
 │   │                       templates · chat routers (+ deps helpers)
 │   ├── main.py             App factory, lifespan, /mcp routes          [Phase 3 ✔]
 │   └── cli.py              nexus serve · stdio · tools                 [Phase 3 ✔]
-├── web/templates, web/static   Dashboard (Jinja2 + HTMX + Alpine)      [Phase 4]
+├── web/templates/        index.html + partials/ (HTMX fragments)      [Phase 4 ✔]
+├── web/static/           app.css (tokens, components) · app.js (Alpine) [Phase 4 ✔]
 ├── plugins/                User connectors, auto-discovered
 ├── tests/                  pytest (+ pytest-asyncio)
 ├── data/                   SQLite DB, secret.key (git-ignored)
@@ -216,11 +217,27 @@ Event stream: `conversation` → (`text` | `tool_call` | `tool_result` | `notice
 - Each template is registered as an **MCP Prompt**, so `prompts/list` and `prompts/get` work for external clients too. Preview renders via `prompts/get` (visible in the Inspector); "Run" renders and streams the agent's answer with the same events as chat.
 - Three starter templates are seeded once: `summarize-url`, `system-health-report`, `save-research-notes`.
 
-### 4.7 Live Inspector *(planned — Phase 4)*
+### 4.7 Live Inspector *(Phase 4 ✔ — `web/static/app.js` → `inspector`)*
 
 - Event bus topic `rpc` → `GET /api/events?topics=rpc` (SSE; the same endpoint multiplexes `approvals` and `connectors`). History: `GET /api/inspector/history`.
-- UI shows a two-column timeline (client → server / server → client), pairs requests with responses by `id`, shows latency, and highlights errors; filter by method; pause; export JSON.
-- Last N messages (default 2,000) are kept in `rpc_log` so a page reload keeps history.
+- A **two-lane wire**: requests sit left of a central spine with a teal tick, replies sit right with a violet tick, notifications are dashed and errors red. Rows are grouped by source (this dashboard, HTTP client, stdio client + client name).
+- Selecting a message shows its exact JSON (syntax-coloured with the same teal/violet), source, time, request id and round-trip; "Show the reply / Show the request" jumps to its pair (matched by `session` + `id`).
+- Filter by method or payload text and by source; pause buffers incoming messages and shows a count; export the visible set as JSON; clear empties `rpc_log`.
+- The last 500 rows load from `GET /api/inspector/history` on open, then live entries append from the shared event stream (capped at 2,000 in memory).
+
+### 4.8 Dashboard *(Phase 4 ✔ — `web/`)*
+
+| Tab | What it does | Data |
+|---|---|---|
+| **Chat** | Conversation list (HTMX fragment), streaming replies rendered as ordered parts (text → tool → text), collapsible tool rows (teal = sent, violet = returned, amber = waiting), inline Approve/Deny cards, model picker, tools on/off, stop, delete. Approvals raised by *other* clients (Claude Desktop via stdio) also appear here. | `POST /api/chat` (SSE on the response), `/api/conversations`, `/ui/conversations` |
+| **Connect** | Provider cards (masked key + source, server address, live model count, test with a model), "Send without asking" switch, named destinations (host-only masking), connector cards with on/off switches and tool lists (HTMX), settings modal generated from each connector's JSON Schema. | `/api/llm/*`, `/api/approvals/auto`, `/api/targets`, `/ui/connectors/*`, `/api/connectors/{name}/config` |
+| **Templates** | List, editor with live blank detection (debounced `validate`), per-blank hint/fallback/required, Preview (via MCP `prompts/get`), Run in chat. | `/api/templates/*` |
+| **Inspector** | See 4.7. | `/api/events?topics=rpc`, `/api/inspector/history` |
+
+- **One `EventSource`** (`/api/events?topics=rpc,approvals,connectors`) feeds the whole page; the shell re-dispatches `rpc` entries as `nexus:rpc` window events. Approvals are additionally polled every 4 s because a stdio process can't publish on this process's bus.
+- **HTMX** renders the parts that are naturally server-side lists (connector cards, conversation list) and swaps a single card after a toggle. **Alpine** owns everything stateful (streams, forms, the inspector).
+- **Visual system:** colour tokens on `:root` with automatic dark mode (`prefers-color-scheme`) and a manual Auto/Light/Dark switch (`data-theme`). Two signal colours carry meaning everywhere: teal for client→server, violet for server→client; amber only for approval. Instrument Sans for UI, Spline Sans Mono only for code/JSON. Responsive down to phone width (rail becomes a bottom bar; the conversation list becomes an overlay), visible focus rings, `prefers-reduced-motion` respected.
+- Per-viewer conveniences (current tab, theme, open conversation) live in `localStorage`, wrapped in try/catch; the page works without it.
 
 ## 5. Data model (SQLite) *(Phase 2 ✔ — `nexus/db.py`)*
 
@@ -267,3 +284,5 @@ Schema versioning uses `PRAGMA user_version` with ordered migration functions; W
 | 12 | **Approvals mediated by SQLite** | In-memory futures only | `nexus stdio` and `nexus serve` are separate processes; the DB row is the only shared state. Polling every 0.5 s is negligible locally. |
 | 13 | **One SSE endpoint** (`/api/events`) with a topic filter | One endpoint per stream | Fewer connections from the dashboard (browsers cap HTTP/1.1 connections per host). Chat replies stream on their own POST response. |
 | 14 | `--project-dir` CLI flag | Absolute paths in every setting | MCP clients launch `nexus stdio` from an arbitrary working directory; one flag makes `.env`, `data/`, `workspace/` and `plugins/` resolve as if run from the project. |
+| 15 | Component CSS in **`@layer components`** | Unlayered stylesheet | Unlayered CSS beats Tailwind v4's layered utilities, so `w-56`/`w-auto` silently lost to `.input { width: 100% }`. Layering restores the intended order (base < components < utilities). |
+| 16 | **HTMX for server-rendered lists, Alpine for live state** | All-Alpine SPA; all-HTMX | Connector cards and the conversation list are plain server data and benefit from one source of truth in Jinja; streaming chat, forms and the inspector need client state. |

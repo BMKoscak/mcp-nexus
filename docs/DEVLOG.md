@@ -133,3 +133,53 @@ Approvals: pending_actions row in SQLite ◄── decided by POST /api/approval
 
 ### Next (Phase 4)
 The dashboard: Chat & Execution (streaming, tool-call cards, inline approvals), Connections (LLM Hub + connector toggles/config forms + webhook targets), Template Studio, and the Live JSON-RPC Inspector, built with Jinja2 + Tailwind (CDN) + HTMX + Alpine.js on the endpoints above.
+
+---
+
+## Phase 4 — Dashboard · 2026-10-25
+
+### Built
+| File | What it does |
+|---|---|
+| `web/templates/index.html` | The single-page dashboard: navigation rail (bottom bar on phones) with an approvals badge, and four views: **Chat**, **Connect**, **Templates**, **Inspector**. Tailwind v4 browser build, HTMX 2.0.11 and Alpine 3.17.4 from jsdelivr, fonts from Google Fonts. Versions pinned, all published more than two weeks before use. |
+| `web/templates/partials/` | HTMX fragments: connector cards (on/off switch swaps just that card), connector list, conversation list. |
+| `web/static/app.js` | Alpine components `nexus` (shell, theme, one shared `EventSource`, approvals, toasts), `chat` (streaming SSE reader over `fetch`, ordered reply parts, history rebuild), `connections` (providers, destinations, schema-driven settings modal), `studio` (template editor, live variable detection, preview, run in chat), `inspector` (two-lane wire, pairing, filter, pause, export). Plus a small safe markdown renderer and a JSON highlighter. |
+| `web/static/app.css` | Design tokens with automatic + manual dark mode; components in `@layer components`. |
+| `nexus/api/ui.py` | Fragment routes: `/ui/connectors`, `/ui/connectors/{name}/toggle`, `/ui/connectors/reload`, `/ui/conversations`. |
+| Tests | +4 (78 total): dashboard wiring, connector toggle fragments, conversation fragment, host-only destination masking. |
+
+### Design
+- **Subject:** a developer's private control room for MCP on their own machine. The one bold element is the Inspector's **two-lane wire**, with requests in teal left of a spine and replies in violet right of it. The same two colours then mean the same thing everywhere (tool rows in chat are a teal-over-violet stripe once a result returns). Amber appears only when something is waiting for you.
+- Everything else stays quiet: cool paper-blue surfaces, an ink-navy rail, Instrument Sans for UI, a monospace face only where the content is code or JSON, sentence-case labels, no decorative cards-everywhere treatment.
+- Copy is written from the user's side: "Local tools" not "connectors registry", "Destinations" not "webhook targets", "Send without asking" not "auto-approve outbound".
+
+### Decisions & findings (from screenshot review)
+I drove every screen with Playwright (light, dark, 390 px phone) using a scripted demo model so real tool flows, approvals and the inspector could be reviewed, then fixed what the screenshots showed:
+- **Tailwind utilities were losing to my CSS** (ADR 15): unlayered CSS beats Tailwind v4's layered utilities, so `w-56`/`w-auto` were ignored and the Inspector toolbar stacked into three rows. Moving component CSS into `@layer components` fixed it.
+- **User bubbles had a big empty top**: `white-space: pre-wrap` on the bubble preserved the template's indentation; moved it to the inner text span.
+- **List bullets were missing** (Tailwind preflight resets `list-style`); restored them for rendered markdown.
+- **New messages and approval cards could land off-screen**: sending now always scrolls to the bottom, and a new pending approval scrolls into view.
+- **Toasts covered the Send button**: moved to the top right.
+- **Destination masking leaked part of the secret**: Discord and Slack webhook URLs carry their token at the end, which the old "first 6 + last 6 characters" mask showed. Destinations now show only the host (`discord.com/…`), with a test.
+- **Phones**: the conversation list was unreachable (now an overlay opened from a Chats button), and Inspector packets were cramped (timestamps hidden under 640 px).
+- **Assistant replies are ordered parts** (text → tool → text), so a model that talks, calls a tool and then answers reads in the right order, live and when reloaded from history.
+- No console errors or warnings in any of the runs; no horizontal scroll at 390 px.
+
+### How it fits together
+```
+index.html ── x-data="nexus" ──► EventSource /api/events (rpc · approvals · connectors)
+   │                                   ├─ rpc ───────► window "nexus:rpc" ─► inspector
+   │                                   ├─ approvals ─► refresh pending ─► chat cards + rail badge
+   │                                   └─ connectors ► htmx.trigger(#connectors, refresh)
+   ├─ chat ──────── fetch POST /api/chat ──► SSE parts (text / tool_call / tool_result)
+   ├─ connections ─ /api/llm/*, /api/targets, /api/approvals/auto, schema-driven settings
+   │                └─ HTMX: /ui/connectors (+ toggle swaps one card)
+   ├─ studio ────── /api/templates/* ─► "Run in chat" dispatches run-template to chat
+   └─ inspector ─── /api/inspector/history + live nexus:rpc events
+```
+
+### Verified
+- Cloud: 78 tests passed; ruff clean; Playwright walkthrough (chat with three tool flows incl. an approval, connections, settings modal, connector toggle, template preview, inspector selection; dark mode; phone) with no console errors. Screenshots saved to `docs/screenshots/`.
+
+### Next (Phase 5)
+README (badges, value proposition, Mermaid diagram, quickstart, Claude Desktop setup, 20-line connector guide, screenshots), final endpoint verification on Windows, create `BMKoscak/mcp-nexus` on GitHub and push.
