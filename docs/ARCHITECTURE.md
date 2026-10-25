@@ -1,6 +1,6 @@
 # MCP Nexus — Architecture
 
-> Status: **Phase 2 implemented** (engine, persistence, connectors). Sections marked *(planned)* describe modules that later phases implement; this document is updated as they land.
+> Status: **Phase 3 implemented** (engine, persistence, connectors, FastAPI backend, LLM router, agent, templates). Sections marked *(planned)* describe modules that later phases implement; this document is updated as they land.
 
 ## 1. Goals
 
@@ -92,13 +92,14 @@ mcp-nexus/
 │   │   ├── web_fetch.py    Fetch → markdown/text, links, JSON          [Phase 2 ✔]
 │   │   ├── system.py       CPU/RAM/disk/process stats (psutil)         [Phase 2 ✔]
 │   │   └── sqlite_query.py Read-only SQL against workspace DBs         [Phase 2 ✔]
-│   ├── llm_router.py       Provider registry, model list, test conn    [Phase 3]
-│   ├── providers/          anthropic.py · openai.py · ollama.py (httpx) [Phase 3]
-│   ├── agent.py            LLM ⇄ MCP tool-calling loop                 [Phase 3]
-│   ├── templates.py        Prompt template CRUD → MCP prompts          [Phase 3]
-│   ├── api/                FastAPI routers (chat, llm, connectors, …)  [Phase 3]
-│   ├── main.py             App factory, lifespan, mounts /mcp          [Phase 3]
-│   └── cli.py              `nexus serve` / `nexus stdio`               [Phase 3]
+│   ├── llm_router.py       Provider credentials, models, tests, routing [Phase 3 ✔]
+│   ├── providers/          base · anthropic · openai · ollama (httpx)  [Phase 3 ✔]
+│   ├── agent.py            LLM ⇄ MCP tool-calling loop                 [Phase 3 ✔]
+│   ├── templates.py        Jinja2-sandboxed templates → MCP prompts    [Phase 3 ✔]
+│   ├── api/                system · llm · connectors · approvals ·     [Phase 3 ✔]
+│   │                       templates · chat routers (+ deps helpers)
+│   ├── main.py             App factory, lifespan, /mcp routes          [Phase 3 ✔]
+│   └── cli.py              nexus serve · stdio · tools                 [Phase 3 ✔]
 ├── web/templates, web/static   Dashboard (Jinja2 + HTMX + Alpine)      [Phase 4]
 ├── plugins/                User connectors, auto-discovered
 ├── tests/                  pytest (+ pytest-asyncio)
@@ -124,7 +125,8 @@ mcp-nexus/
   1. **In-memory** — the FastAPI host connects its own `Client` to the server over memory streams. This is the path the web UI uses.
   2. **Streamable HTTP** — `server.streamable_http_app()` is mounted at `/mcp` so external clients can connect to `http://127.0.0.1:8765/mcp`.
   3. **stdio** — `nexus stdio` runs the same server for Claude Desktop-style configs.
-- **RPC Tap:** each message becomes an entry `{seq, ts, transport, session, direction: c2s|s2c, kind: request|response|notification|error, method, rpc_id, latency_ms, payload}`. Responses are paired with their request by `(session, direction, id)` to fill in `method` and `latency_ms`. Entries are published on the `rpc` bus topic immediately and written to `rpc_log` in 0.5 s batches (ring buffer, default 2,000 rows). HTTP-transport traffic will be tapped with ASGI middleware on `/mcp` in Phase 3.
+- **RPC Tap:** each message becomes an entry `{seq, ts, transport, session, direction: c2s|s2c, kind: request|response|notification|error, method, rpc_id, latency_ms, payload}`. Responses are paired with their request by `(session, direction, id)` to fill in `method` and `latency_ms`. Entries are published on the `rpc` bus topic immediately and written to `rpc_log` in 0.5 s batches (ring buffer, default 2,000 rows). - **External clients** (Streamable HTTP on `/mcp`, or `nexus stdio`) never pass through `TappedTransport`, so they are recorded by `ExternalTap`, an MCP **server middleware** (`ServerMiddleware`, new in 2.x) that sees the method, id, raw params and result of every inbound request on any transport. It rebuilds the JSON-RPC envelope in the same entry format (`transport: http|stdio`, `session` = the client's `clientInfo.name`). It skips host traffic (no HTTP request and not in stdio mode) so nothing is logged twice.
+- **`/mcp` mounting:** `streamable_http_app(streamable_http_path="/mcp")` is built at app creation and its routes are spliced into the FastAPI router, rather than `app.mount("/mcp", …)`, which would 307-redirect `/mcp` → `/mcp/`. The app lifespan runs `session_manager.run()`. The SDK's DNS-rebinding protection is kept (`host=settings.host`); `localhost` and `127.0.0.1` both work.
 
 ### 4.2 Connector Registry *(Phase 2 ✔ — `nexus/registry.py`, `nexus/connectors/base.py`)*
 
@@ -170,7 +172,7 @@ sequenceDiagram
     alt auto-approve ON
         Gate-->>MCP: approved
     else auto-approve OFF
-        Gate-->>UI: SSE "approval_required"
+        Gate-->>UI: SSE approvals "requested" (+ pending row in SQLite)
         UI->>Gate: POST /api/approvals/{id} (approve / deny)
         Gate-->>MCP: decision (or timeout → denied)
     end
@@ -178,12 +180,12 @@ sequenceDiagram
     Agent-->>LLM: tool_result
 ```
 
-- The gate is an `asyncio.Future` per pending action, persisted in `pending_actions` for audit (`approved`, `denied`, `timeout`, `auto`). The auto-approve toggle is stored in `settings` so it survives restarts; `NEXUS_AUTO_APPROVE_OUTBOUND` is only the initial default.
+- **Decisions travel through SQLite** so they work across processes: Claude Desktop runs `nexus stdio` as its own process with no UI, while the user's browser talks to `nexus serve`. The waiting call polls its `pending_actions` row every 0.5 s; `decide()` sets the row with a conditional `UPDATE … WHERE status='pending'` (first writer wins) and, when the waiter lives in the same process, also resolves its in-memory future for an instant wake-up. Rows end as `approved`, `denied`, `timeout` or `auto`, which doubles as the audit trail. The auto-approve toggle is stored in `settings` so it survives restarts; `NEXUS_AUTO_APPROVE_OUTBOUND` is only the initial default.
 - Approval cards show a human summary rendered from the tool's `summary=` template (e.g. `Discord (team): hello`) plus the arguments. Editing arguments before approving was considered and deferred: edited values would bypass the SDK's argument validation.
 - Named targets (`discord`, `slack`, saved custom webhooks) resolve server-side so the LLM never sees webhook URLs.
 - External MCP clients hit the same gate: their calls wait for approval in the Nexus UI (or time out).
 
-### 4.4 LLM Router *(planned — Phase 3)*
+### 4.4 LLM Router *(Phase 3 ✔ — `nexus/llm_router.py`, `nexus/providers/`)*
 
 - **Direct async clients over `httpx`** — one small adapter per provider behind a common `Provider` protocol:
   - `AnthropicProvider` → `POST /v1/messages` (SSE stream, `tool_use` / `tool_result` blocks)
@@ -192,25 +194,31 @@ sequenceDiagram
 - Each adapter normalises into one internal shape: `TextDelta`, `ToolCall(id, name, arguments)`, `Done(usage, stop_reason)`. The agent loop only sees that shape.
 - Models are addressed as `<provider>/<model>` (e.g. `anthropic/claude-sonnet-5-5`, `ollama/llama3.2`).
 - Provider credentials resolve in order: environment → encrypted SQLite (`providers` table) → none.
-- `GET /api/llm/models` merges a curated list for cloud providers with a live `GET {OLLAMA_BASE_URL}/api/tags` for local models.
-- "Test connection" sends a 1-token completion and reports latency or the provider's error.
+- `GET /api/llm/models` queries every provider's live model list in parallel (`/v1/models`, `/models`, `/api/tags`) with an 8 s cap, reporting per-provider errors (`no API key`, `connection refused`) instead of failing.
+- "Test connection" lists models and, given a model, streams a tiny "pong" completion; it reports latency or the provider's own error message.
+- Anthropic specifics: tool results are sent as user-role `tool_result` blocks, consecutive same-role turns are merged (strict alternation), `max_tokens` defaults to 4096. OpenAI: `max_completion_tokens`, `stream_options.include_usage`, tool-call fragments reassembled by `index`; no `Authorization` header is sent to non-OpenAI base URLs without a key. Ollama: NDJSON lines, tool calls get generated ids, tool results carry `tool_name`.
+- The active model is a persisted setting (`NEXUS_DEFAULT_MODEL` is the initial default).
 
-### 4.5 Agent loop *(planned — Phase 3)*
+### 4.5 Agent loop *(Phase 3 ✔ — `nexus/agent.py`)*
 
-1. `client.list_tools()` → convert each MCP tool's `inputSchema` to an OpenAI function spec.
-2. Stream the completion; forward text deltas to the browser over SSE.
-3. On tool calls, execute each via `client.call_tool()` (through the tap, so it shows in the Inspector), append results, and loop — capped by `max_steps` (default 8).
-4. Persist the conversation (`conversations`, `messages`).
+1. `engine.list_tools()` (a real `tools/list`) → neutral `ToolDef`s; each adapter converts them to its vendor schema.
+2. Stream the completion; text deltas go straight to the browser as SSE `text` events.
+3. Tool calls run sequentially via `engine.call_tool()` (through the tap, so each one shows in the Inspector; gated tools pause here for approval). Results are truncated to 20k characters, appended to the history, and the loop repeats, capped by `max_steps` (default 8).
+4. Every user, assistant and tool message is persisted, so a conversation can be resumed; dangling tool calls from an interrupted stream are dropped when the history is reloaded (providers reject a `tool_use` without a result).
+5. If a model rejects tools ("does not support tools", common with small Ollama models), the agent emits a `notice` and retries without tools instead of failing.
 
-### 4.6 Template Studio *(planned — Phase 3)*
+Event stream: `conversation` → (`text` | `tool_call` | `tool_result` | `notice`)* → `done` | `error`.
 
-- Templates are stored in SQLite with a name, description, body and a declared argument list (name, description, required, default).
-- Bodies use `{{ variable }}` syntax rendered with Jinja2's **`SandboxedEnvironment`** (no attribute access to Python internals).
-- Each template is registered as an **MCP Prompt**, so `prompts/list` and `prompts/get` work for external clients too. "Run" in the UI renders the prompt via `prompts/get` and sends it to the selected model.
+### 4.6 Template Studio *(Phase 3 ✔ — `nexus/templates.py`)*
+
+- Templates are stored in SQLite with a name, description, body and an argument list (name, description, required, default). If arguments are omitted they are inferred from the body with `jinja2.meta.find_undeclared_variables`; declared lists are topped up with any variables they miss.
+- Bodies use full Jinja2 syntax (`{{ var }}`, `{{ x | default('…') }}`, `{% if %}`) rendered in a **`SandboxedEnvironment`** with **`StrictUndefined`**: no access to Python internals (`''.__class__.__mro__` raises), and a missing variable is an error rather than silent blank text. Optional arguments with no value stay undefined so `| default()` applies.
+- Each template is registered as an **MCP Prompt**, so `prompts/list` and `prompts/get` work for external clients too. Preview renders via `prompts/get` (visible in the Inspector); "Run" renders and streams the agent's answer with the same events as chat.
+- Three starter templates are seeded once: `summarize-url`, `system-health-report`, `save-research-notes`.
 
 ### 4.7 Live Inspector *(planned — Phase 4)*
 
-- Event bus topic `rpc` → `GET /api/inspector/stream` (SSE).
+- Event bus topic `rpc` → `GET /api/events?topics=rpc` (SSE; the same endpoint multiplexes `approvals` and `connectors`). History: `GET /api/inspector/history`.
 - UI shows a two-column timeline (client → server / server → client), pairs requests with responses by `id`, shows latency, and highlights errors; filter by method; pause; export JSON.
 - Last N messages (default 2,000) are kept in `rpc_log` so a page reload keeps history.
 
@@ -224,7 +232,7 @@ sequenceDiagram
 | `webhook_targets` | Named custom webhook destinations (URL encrypted) |
 | `templates` | Prompt templates + JSON argument schema |
 | `conversations` / `messages` | Chat history incl. tool calls/results |
-| `rpc_log` | Ring buffer of tapped JSON-RPC messages |
+| `rpc_log` | Ring buffer of tapped JSON-RPC messages (v2 migration added `session`) |
 | `pending_actions` | Approval audit trail (payload, decision, decided_at) |
 
 Schema versioning uses `PRAGMA user_version` with ordered migration functions; WAL mode is enabled for concurrent reads during streaming.
@@ -255,3 +263,7 @@ Schema versioning uses `PRAGMA user_version` with ordered migration functions; W
 | 8 | Custom **`TappedTransport`** for the host client | SDK's in-process `Client(server)` | The SDK's in-process path skips JSON-RPC entirely (direct dispatcher), so there would be nothing genuine to inspect. |
 | 9 | Tool names `connector_tool` | `connector.tool` | Anthropic and OpenAI reject dots in tool names. |
 | 10 | **selectolax `lexbor`** backend for HTML | BeautifulSoup, readability libs | Fast C parser with no extra deps; selectolax 1.0 removed the old `modest` backend. |
+| 11 | External traffic tapped with **server middleware** | ASGI middleware parsing HTTP/SSE bodies | Transport-agnostic (covers HTTP *and* stdio), no body buffering or SSE parsing. Trade-off: envelopes are rebuilt from method/id/params/result rather than byte-copied. |
+| 12 | **Approvals mediated by SQLite** | In-memory futures only | `nexus stdio` and `nexus serve` are separate processes; the DB row is the only shared state. Polling every 0.5 s is negligible locally. |
+| 13 | **One SSE endpoint** (`/api/events`) with a topic filter | One endpoint per stream | Fewer connections from the dashboard (browsers cap HTTP/1.1 connections per host). Chat replies stream on their own POST response. |
+| 14 | `--project-dir` CLI flag | Absolute paths in every setting | MCP clients launch `nexus stdio` from an arbitrary working directory; one flag makes `.env`, `data/`, `workspace/` and `plugins/` resolve as if run from the project. |

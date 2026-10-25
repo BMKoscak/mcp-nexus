@@ -84,3 +84,52 @@ FastAPI (Phase 3) ──► MCPEngine.call_tool()
 
 ### Next (Phase 3)
 `main.py` app factory + lifespan, `/mcp` Streamable HTTP mount (tapped via ASGI middleware) and `nexus stdio`, provider adapters + `llm_router.py`, the agent tool-calling loop, the template manager (Jinja2 sandbox → MCP prompts), and REST/SSE routes.
+
+---
+
+## Phase 3 — FastAPI backend, LLM router, agent & templates · 2026-10-25
+
+### Built
+| Module | What it does |
+|---|---|
+| `nexus/providers/` | Provider-neutral types (`Message`, `ToolDef`, `ToolCall`, stream events `TextDelta`/`ToolCallEvent`/`Done`) and three `httpx` adapters: **Anthropic** Messages (SSE, `tool_use`/`tool_result` blocks, turn merging), **OpenAI** Chat Completions (SSE, tool-call fragment reassembly, usage; doubles as an OpenAI-compatible client for LM Studio/vLLM/OpenRouter), **Ollama** `/api/chat` (NDJSON, native tools). |
+| `nexus/llm_router.py` | Credentials (env → encrypted SQLite), masked provider listing with key source, parallel live model discovery with per-provider errors, connection test with a "pong" completion, `provider/model` routing, persisted active model. |
+| `nexus/agent.py` | Tool-calling loop over the tapped MCP client: streams text, runs tool calls (approval-gated ones pause), feeds results back, persists the conversation, retries without tools for models that can't use them, caps at 8 steps. |
+| `nexus/templates.py` | Template CRUD with argument inference, Jinja2 `SandboxedEnvironment` + `StrictUndefined`, registration as MCP prompts, three seeded starters. |
+| `nexus/main.py` | App factory + lifespan (engine → router → templates → Streamable HTTP session manager), error mapping (`ProviderError`→502, `KeyError`→404, `ValueError`→400), `/mcp` routes, static/index. |
+| `nexus/api/` | 32 routes in six routers: system (health, settings, `/api/events` SSE, inspector history), llm, connectors (+ raw tools/resources/prompts, webhook targets), approvals, templates (validate, render, run-as-SSE), chat (SSE) + conversations. |
+| `nexus/cli.py` | `nexus serve`, `nexus stdio`, `nexus tools`, `--project-dir`. |
+| `ExternalTap` | Server middleware logging Streamable HTTP and stdio clients in the Inspector format. |
+| Tests | 74 total (+24): provider adapters against canned vendor streams, and end-to-end API tests with a scripted `FakeProvider` (full tool loop writing a real file, conversation resume, approval during a chat, encrypted/masked keys, connector toggles and config validation, template CRUD/render/run/sandbox escape) plus a real uvicorn server hit by an external MCP client over HTTP. |
+
+### Decisions & findings
+- **External traffic via `ServerMiddleware`** (ADR 11). `mcp` 2.x has a context-tier middleware hook that sees every inbound request on any transport, so one class covers both `/mcp` and stdio without parsing HTTP or SSE bodies. The host's own in-process traffic is skipped there (it's already tapped on the wire).
+- **Approvals now go through SQLite** (ADR 12). The Phase 2 gate kept futures in memory, which can't work when Claude Desktop runs `nexus stdio` as a separate process from the UI. `request()` now polls its `pending_actions` row and `decide()` does a first-writer-wins conditional UPDATE. A new test runs two gates on two connections to one database file to prove the cross-process path. `decide()` and `pending()` became async.
+- **Schema migration v2** adds `rpc_log.session`. Caught by the HTTP test: the column was missing, and the migration runner handled the upgrade.
+- **Route splicing instead of `app.mount`** for `/mcp`: a mount 307-redirects `/mcp` → `/mcp/`, which some clients don't follow for POST.
+- **Lifespan in a single task in tests**: the same anyio cross-task rule as in Phase 2, now for the session manager's task group. The `app` fixture runs the lifespan in a dedicated task, which is what uvicorn does.
+- **The new protocol needs an `mcp-method` header** on Streamable HTTP POSTs; a hand-written curl without it gets `-32020`. Real SDK clients send it.
+- **ruff B008** flags FastAPI's `Depends()` defaults; configured `extend-immutable-calls` rather than contorting signatures.
+- **Not verified against live LLMs**: there's no Ollama install or API key on the dev machine, so the adapters are verified against canned streams built from each vendor's documented format. A live check is on the Phase 5 list once a key or local model is available.
+
+### How it fits together
+```
+Browser ──POST /api/chat──► Agent.run ──► LLMRouter ──► Anthropic | OpenAI | Ollama (httpx, streaming)
+   ▲                           │
+   │ SSE text/tool events      └─tool calls─► MCPEngine.call_tool ─► TappedTransport ─► MCPServer ─► connectors
+   │                                                                     │                  ▲
+   └──── GET /api/events (rpc · approvals · connectors) ◄── EventBus ◄───┘                  │
+                                                                         ExternalTap ◄──────┤
+Claude Desktop ── stdio (nexus stdio) ───────────────────────────────────────────────────────┤
+Cursor etc.    ── Streamable HTTP POST /mcp ─────────────────────────────────────────────────┘
+Approvals: pending_actions row in SQLite ◄── decided by POST /api/approvals/{id} (any process)
+```
+
+### Verified
+- Cloud (Linux, Python 3.13): 74 passed; ruff check + format clean.
+- Windows / Python 3.15.0: 73 passed, 1 skipped; `nexus serve` started, `/api/health` OK, an external MCP client listed 21 tools and called `system_stats` over `http://localhost:8765/mcp`, and the Inspector history showed the HTTP-transport rows.
+- `nexus --project-dir … stdio` driven by the SDK's stdio client: 21 tools and 3 prompts listed, file written into the workspace, `prompts/get` rendered, 10 stdio rows logged.
+- `/api/events` streamed live `rpc` events while a tool was called through the REST API.
+
+### Next (Phase 4)
+The dashboard: Chat & Execution (streaming, tool-call cards, inline approvals), Connections (LLM Hub + connector toggles/config forms + webhook targets), Template Studio, and the Live JSON-RPC Inspector, built with Jinja2 + Tailwind (CDN) + HTMX + Alpine.js on the endpoints above.
