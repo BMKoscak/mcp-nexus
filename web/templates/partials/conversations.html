@@ -1,0 +1,9 @@
+{% for c in conversations %}
+  <button class="convo {{ 'is-active' if c.id == active else '' }}" data-id="{{ c.id }}"
+          @click="$dispatch('open-conversation', { id: '{{ c.id }}' })">
+    <span class="convo-title">{{ c.title }}</span>
+    <span class="convo-model">{{ (c.model or "").split("/", 1)[-1] }}</span>
+  </button>
+{% else %}
+  <p class="px-3 py-2 text-sm text-muted">Your chats will be listed here.</p>
+{% endfor %}

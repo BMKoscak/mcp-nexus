@@ -19,11 +19,10 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 
 from nexus import __version__
 from nexus.agent import Agent
-from nexus.api import approvals, chat, connectors, llm, system, templates
+from nexus.api import approvals, chat, connectors, llm, system, templates, ui
 from nexus.config import Settings, get_settings
 from nexus.llm_router import LLMRouter
 from nexus.mcp_engine import MCPEngine
@@ -93,7 +92,7 @@ def create_app(
     )
     app.state.nexus = nexus
 
-    for module in (system, llm, connectors, approvals, templates, chat):
+    for module in (system, llm, connectors, approvals, templates, chat, ui):
         app.include_router(module.router)
     # Mount the MCP endpoint as plain routes (avoids the /mcp → /mcp/ redirect of a Mount).
     app.router.routes.extend(mcp_http.routes)
@@ -113,12 +112,11 @@ def create_app(
     static_dir = WEB_DIR / "static"
     if static_dir.is_dir():
         app.mount("/static", StaticFiles(directory=static_dir), name="static")
-    page_templates = Jinja2Templates(directory=WEB_DIR / "templates")
 
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     async def index(request: Request) -> HTMLResponse:
         if (WEB_DIR / "templates" / "index.html").exists():
-            return page_templates.TemplateResponse(request, "index.html", {"version": __version__})
+            return ui.pages.TemplateResponse(request, "index.html", {"version": __version__})
         return HTMLResponse(
             f"<h1>MCP Nexus {__version__}</h1><p>The dashboard arrives in Phase 4. "
             "Meanwhile see the <a href='/docs'>API docs</a>.</p>"

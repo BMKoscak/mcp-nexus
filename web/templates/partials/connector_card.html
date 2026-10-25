@@ -1,0 +1,48 @@
+<article id="connector-{{ c.name }}" class="connector" data-status="{{ c.status }}">
+  <div class="connector-head">
+    <div class="min-w-0">
+      <h3 class="connector-name">{{ c.name }}</h3>
+      <p class="text-sm text-muted">{{ c.description or "No description." }}</p>
+    </div>
+    {% if c.status != "error" %}
+      <button class="switch" role="switch" aria-checked="{{ 'true' if c.status == 'active' else 'false' }}"
+              aria-label="{{ 'Turn off' if c.status == 'active' else 'Turn on' }} {{ c.name }}"
+              hx-post="/ui/connectors/{{ c.name }}/toggle" hx-target="#connector-{{ c.name }}" hx-swap="outerHTML">
+        <span></span>
+      </button>
+    {% endif %}
+  </div>
+
+  <div class="connector-meta">
+    <span class="status status-{{ c.status }}">{{ {"active": "On", "disabled": "Off", "error": "Failed to load"}[c.status] }}</span>
+    <span>{{ {"builtin": "Built in", "plugin": "Plugin", "entrypoint": "Installed package"}[c.source] }}</span>
+    <span>{{ c.tools|length }} tool{{ "" if c.tools|length == 1 else "s" }}</span>
+    {% if c.resources %}<span>{{ c.resources|length }} resource{{ "" if c.resources|length == 1 else "s" }}</span>{% endif %}
+  </div>
+
+  {% if c.error %}
+    <details class="connector-error">
+      <summary>Show the error</summary>
+      <pre>{{ c.error }}</pre>
+    </details>
+  {% endif %}
+
+  {% if c.tools %}
+    <details class="connector-tools">
+      <summary>Tools</summary>
+      <ul>
+        {% for t in c.tools %}
+          <li>
+            <code>{{ t.name }}</code>
+            {% if t.requires_approval %}<span class="hold-tag">Asks first</span>{% endif %}
+            <span class="text-muted">{{ t.description }}</span>
+          </li>
+        {% endfor %}
+      </ul>
+    </details>
+  {% endif %}
+
+  {% if c.has_config %}
+    <button class="btn-quiet self-start" @click="$dispatch('open-config', { name: '{{ c.name }}' })">Settings</button>
+  {% endif %}
+</article>

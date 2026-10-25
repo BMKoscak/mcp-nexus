@@ -1,0 +1,5 @@
+{% for c in connectors %}
+  {% include "partials/connector_card.html" %}
+{% else %}
+  <p class="text-muted text-sm">No connectors found. Add a Python file to your plugins folder and choose Reload plugins.</p>
+{% endfor %}
