@@ -8,14 +8,16 @@ template: copy it to `dice.py` to try it.
 ```python
 from nexus.connectors import Connector, tool
 
+
 class Dice(Connector):
-    name = "dice"                 # tools become dice_<method>
+    name = "dice"  # tools become dice_<method>
     description = "Roll dice"
 
     @tool()
     async def roll(self, sides: int = 6) -> int:
         """Roll one die with the given number of sides."""
         import random
+
         return random.randint(1, sides)
 ```
 
