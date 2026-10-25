@@ -4,14 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcp-nexus"
-version = "0.1.0"
+version = "0.2.0"
 description = "A local Model Context Protocol hub: multi-LLM chat, pluggable MCP connectors, outbound dispatch, prompt templates and a live JSON-RPC inspector."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
 authors = [{ name = "Benjamin Koščak" }]
-keywords = ["mcp", "model-context-protocol", "llm", "fastapi", "agents", "claude", "ollama"]
+keywords = ["mcp", "model-context-protocol", "llm", "fastapi", "agents", "claude", "gemini", "ollama"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Framework :: FastAPI",
@@ -35,7 +35,7 @@ dependencies = [
     "pydantic-settings>=2.16",
     "aiosqlite>=0.22",
     "cryptography>=50",
-    # HTTP: LLM provider clients (Anthropic, OpenAI, Ollama) + connectors
+    # HTTP: LLM provider clients (Anthropic, Gemini, OpenAI, Ollama) + connectors
     "httpx>=0.28",
     "selectolax>=1.0",
     "psutil>=7.2",

@@ -209,3 +209,20 @@ README (badges, value proposition, Mermaid diagram, quickstart, Claude Desktop s
 
 ### Release
 - Repository: **https://github.com/BMKoscak/mcp-nexus** (public, MIT), `main` branch, full commit history from Phase 1.
+
+---
+
+## v0.2 — Google Gemini provider · 2026-10-25
+
+### Built
+- `nexus/providers/gemini.py`: native adapter for the Generative Language API. It streams `streamGenerateContent?alt=sse` with `x-goog-api-key` auth, handles text and function-call parts, reports usage, surfaces blocked prompts and stream errors, and lists only `generateContent`-capable models (following `nextPageToken`).
+- `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) in settings, `.env.example`, the router and the dashboard (the provider card appears automatically).
+- `ToolCall.extra` + `to_record()`: provider-specific data persisted with the conversation but kept out of browser events.
+- 7 new tests (85 total): the stream with a thought part, a signed call and an unsigned parallel call; signature and id replay and FC1, FC2, FR1, FR2 ordering; schema cleaning; model filtering and pagination; error surfacing; signatures surviving a SQLite round trip through the agent; the provider showing up in the API.
+
+### Decisions & findings
+- **Native API over the OpenAI-compatible endpoint** (ADR 17). Checked against Google's current docs: Gemini 3/4 attach a `thoughtSignature` to function-call parts and reject the next request with HTTP 400 if it isn't returned on the same part. With parallel calls only the first part is signed, and the replay must keep all calls before all responses. Doing this natively keeps it explicit and testable. Google's newer Interactions API was skipped because it's server-stateful, unlike every other adapter here.
+- **`parametersJsonSchema` instead of `parameters`**: the latter accepts only an OpenAPI subset and rejects keywords MCP tools commonly emit (type arrays, nullable unions). Two gotchas from other projects' reports were handled: omit the key for parameterless tools (a `null` or empty schema is rejected), and inline `$ref`s when dropping `$defs`.
+- **Not verified against the live API**: no Gemini key on the dev machine. Request and response shapes follow Google's API reference and thought-signature guide; the smoke test will do a real chat turn once a key is added.
+
+Sources: [Gemini thought signatures](https://ai.google.dev/gemini-api/docs/generate-content/thought-signatures), [generateContent reference](https://ai.google.dev/api/generate-content), [models.list](https://ai.google.dev/api/models), [symfony/ai#2633](https://github.com/symfony/ai/pull/2633) on `parametersJsonSchema`.

@@ -1,6 +1,6 @@
 # MCP Nexus — Architecture
 
-> Status: **v0.1.0 — all five phases complete.** Every component described here is implemented, tested and verified on Linux (Python 3.12, 3.13) and Windows (Python 3.15).
+> Status: **v0.2.0** (all five phases complete, plus the Gemini provider). Every component described here is implemented, tested and verified on Linux (Python 3.12, 3.13) and Windows (Python 3.15).
 
 ## 1. Goals
 
@@ -93,7 +93,7 @@ mcp-nexus/
 │   │   ├── system.py       CPU/RAM/disk/process stats (psutil)         [Phase 2 ✔]
 │   │   └── sqlite_query.py Read-only SQL against workspace DBs         [Phase 2 ✔]
 │   ├── llm_router.py       Provider credentials, models, tests, routing [Phase 3 ✔]
-│   ├── providers/          base · anthropic · openai · ollama (httpx)  [Phase 3 ✔]
+│   ├── providers/          base · anthropic · gemini · openai · ollama [Phase 3 ✔, Gemini v0.2]
 │   ├── agent.py            LLM ⇄ MCP tool-calling loop                 [Phase 3 ✔]
 │   ├── templates.py        Jinja2-sandboxed templates → MCP prompts    [Phase 3 ✔]
 │   ├── api/                system · llm · connectors · approvals ·     [Phase 3 ✔]
@@ -193,6 +193,7 @@ sequenceDiagram
 - **Direct async clients over `httpx`** — one small adapter per provider behind a common `Provider` protocol:
   - `AnthropicProvider` → `POST /v1/messages` (SSE stream, `tool_use` / `tool_result` blocks)
   - `OpenAIProvider` → `POST /v1/chat/completions` (SSE stream, `tool_calls`); also works for any OpenAI-compatible endpoint (LM Studio, vLLM, OpenRouter) via a custom base URL
+  - `GeminiProvider` → `POST /v1beta/models/{model}:streamGenerateContent?alt=sse` (SSE stream, `functionCall` / `functionResponse` parts), auth via `x-goog-api-key`
   - `OllamaProvider` → `POST /api/chat` (NDJSON stream, native `tools`)
 - Each adapter normalises into one internal shape: `TextDelta`, `ToolCall(id, name, arguments)`, `Done(usage, stop_reason)`. The agent loop only sees that shape.
 - Models are addressed as `<provider>/<model>` (e.g. `anthropic/claude-sonnet-5-5`, `ollama/llama3.2`).
@@ -200,6 +201,7 @@ sequenceDiagram
 - `GET /api/llm/models` queries every provider's live model list in parallel (`/v1/models`, `/models`, `/api/tags`) with an 8 s cap, reporting per-provider errors (`no API key`, `connection refused`) instead of failing.
 - "Test connection" lists models and, given a model, streams a tiny "pong" completion; it reports latency or the provider's own error message.
 - Anthropic specifics: tool results are sent as user-role `tool_result` blocks, consecutive same-role turns are merged (strict alternation), `max_tokens` defaults to 4096. OpenAI: `max_completion_tokens`, `stream_options.include_usage`, tool-call fragments reassembled by `index`; no `Authorization` header is sent to non-OpenAI base URLs without a key. Ollama: NDJSON lines, tool calls get generated ids, tool results carry `tool_name`.
+- Gemini specifics: tool schemas go in `parametersJsonSchema` (plain JSON Schema; the legacy `parameters` field only takes an OpenAPI subset and rejects common MCP schema keywords), omitted for parameterless tools; local `$ref`s are inlined. Gemini 3+ attaches a `thoughtSignature` to function-call parts and returns HTTP 400 if it isn't echoed back on the same part, so adapters can stash provider-only data in `ToolCall.extra`, which is persisted with the conversation (`to_record()`) but never streamed to the browser (`to_dict()`). Parallel calls are replayed as all `functionCall`s in one `model` turn followed by all `functionResponse`s in one `user` turn (Gemini rejects interleaving). `functionCall.id` is echoed only when Gemini supplied one. Thought-summary parts are skipped; model listing filters to models supporting `generateContent` and follows `nextPageToken`.
 - The active model is a persisted setting (`NEXUS_DEFAULT_MODEL` is the initial default).
 
 ### 4.5 Agent loop *(Phase 3 ✔ — `nexus/agent.py`)*
@@ -288,3 +290,4 @@ Schema versioning uses `PRAGMA user_version` with ordered migration functions; W
 | 14 | `--project-dir` CLI flag | Absolute paths in every setting | MCP clients launch `nexus stdio` from an arbitrary working directory; one flag makes `.env`, `data/`, `workspace/` and `plugins/` resolve as if run from the project. |
 | 15 | Component CSS in **`@layer components`** | Unlayered stylesheet | Unlayered CSS beats Tailwind v4's layered utilities, so `w-56`/`w-auto` silently lost to `.input { width: 100% }`. Layering restores the intended order (base < components < utilities). |
 | 16 | **HTMX for server-rendered lists, Alpine for live state** | All-Alpine SPA; all-HTMX | Connector cards and the conversation list are plain server data and benefit from one source of truth in Jinja; streaming chat, forms and the inspector need client state. |
+| 17 | **Native Gemini adapter** (`generateContent` + `parametersJsonSchema`) | Gemini's OpenAI-compatible endpoint; the newer Interactions API | Native function calling with full JSON Schema and explicit control of thought signatures; stateless like the other adapters (Interactions is server-stateful). Needed one generic addition: `ToolCall.extra` for round-trip provider data. |
